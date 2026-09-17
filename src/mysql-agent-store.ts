@@ -10,6 +10,7 @@ import mysql, {
 import type {
   AgentSessionSnapshot,
   AgentStep,
+  AgentToolExecution,
   AgentTurn,
   SessionRecord,
   SessionStore,
@@ -17,7 +18,6 @@ import type {
   TurnStatus,
 } from './session-store.ts'
 import type { AgentProject, ProjectRoot, ProjectStore } from './project.ts'
-import type { ToolCall } from './types.ts'
 
 export interface MysqlAgentStoreOptions {
   host: string
@@ -73,20 +73,36 @@ export class MysqlAgentStore implements SessionStore, ProjectStore {
       [sessionId],
     )
     const [stepRows] = await this.pool.execute<StepRow[]>(
-      `SELECT s.turn_id, s.step_number, s.status, s.output_kind,
-              s.assistant_content, s.tool_call_id, s.tool_name,
-              s.tool_arguments, s.tool_result, s.error_message
+      `SELECT CAST(s.id AS CHAR) AS id, s.turn_id, s.step_number, s.status, s.output_kind,
+              s.assistant_content
        FROM agent_steps AS s
        INNER JOIN agent_turns AS t ON t.id = s.turn_id
        WHERE t.session_id = ?
        ORDER BY t.turn_number, s.step_number`,
       [sessionId],
     )
+    const [toolCallRows] = await this.pool.execute<ToolCallRow[]>(
+      `SELECT CAST(c.step_id AS CHAR) AS step_id, c.call_index, c.status, c.tool_call_id,
+              c.tool_name, c.tool_arguments, c.tool_result, c.error_message
+       FROM agent_tool_calls AS c
+       INNER JOIN agent_steps AS s ON s.id = c.step_id
+       INNER JOIN agent_turns AS t ON t.id = s.turn_id
+       WHERE t.session_id = ?
+       ORDER BY t.turn_number, s.step_number, c.call_index`,
+      [sessionId],
+    )
+
+    const toolCallsByStep = new Map<string, AgentToolExecution[]>()
+    for (const row of toolCallRows) {
+      const calls = toolCallsByStep.get(row.step_id) ?? []
+      calls.push(toToolExecution(row))
+      toolCallsByStep.set(row.step_id, calls)
+    }
 
     const stepsByTurn = new Map<string, AgentStep[]>()
     for (const row of stepRows) {
       const steps = stepsByTurn.get(row.turn_id) ?? []
-      steps.push(toStep(row))
+      steps.push(toStep(row, toolCallsByStep.get(row.id) ?? []))
       stepsByTurn.set(row.turn_id, steps)
     }
 
@@ -137,6 +153,45 @@ export class MysqlAgentStore implements SessionStore, ProjectStore {
     return await loadProjects(this.pool, '', [])
   }
 
+  async attachRoot(projectId: string, path: string): Promise<AgentProject> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      const [projects] = await connection.execute<RowDataPacket[]>(
+        'SELECT id FROM agent_projects WHERE id = ? FOR UPDATE',
+        [projectId],
+      )
+      if (projects.length === 0) throw new Error(`Unknown project: ${projectId}`)
+      const [existing] = await connection.execute<RowDataPacket[]>(
+        `SELECT id FROM agent_project_roots
+         WHERE project_id = ? AND root_path = ?
+         LIMIT 1`,
+        [projectId, path],
+      )
+      if (existing.length === 0) {
+        await connection.execute(
+          `INSERT INTO agent_project_roots (id, project_id, root_path, root_role)
+           VALUES (?, ?, ?, 'attached')`,
+          [randomUUID(), projectId, path],
+        )
+        await connection.execute(
+          'UPDATE agent_projects SET updated_at = CURRENT_TIMESTAMP(6) WHERE id = ?',
+          [projectId],
+        )
+      }
+      await connection.commit()
+    } catch (error: unknown) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
+
+    const project = await this.loadProject(projectId)
+    if (!project) throw new Error(`Project disappeared after attaching root: ${projectId}`)
+    return project
+  }
+
   async record(sessionId: string, record: SessionRecord): Promise<void> {
     const connection = await this.pool.getConnection()
     try {
@@ -176,13 +231,20 @@ interface TurnRow extends RowDataPacket {
 }
 
 interface StepRow extends RowDataPacket {
+  id: string
   turn_id: string
   step_number: number
   status: string
   output_kind: string
   assistant_content: string | null
-  tool_call_id: string | null
-  tool_name: string | null
+}
+
+interface ToolCallRow extends RowDataPacket {
+  step_id: string
+  call_index: number
+  status: string
+  tool_call_id: string
+  tool_name: string
   tool_arguments: unknown
   tool_result: string | null
   error_message: string | null
@@ -251,7 +313,7 @@ async function migrate(pool: Pool): Promise<void> {
     'SELECT MAX(version) AS version FROM agent_schema_migrations',
   )
   const version = rows[0]?.version ?? 0
-  if (version > 2) throw new Error(`Database schema version ${version} is newer than supported version 2`)
+  if (version > 3) throw new Error(`Database schema version ${version} is newer than supported version 3`)
 
   if (version < 1) {
     await pool.execute(`
@@ -340,6 +402,48 @@ async function migrate(pool: Pool): Promise<void> {
     `)
     await pool.execute('INSERT IGNORE INTO agent_schema_migrations (version) VALUES (2)')
   }
+
+  if (version < 3) {
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS agent_tool_calls (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        step_id BIGINT UNSIGNED NOT NULL,
+        call_index INT UNSIGNED NOT NULL,
+        status VARCHAR(16) NOT NULL,
+        tool_call_id VARCHAR(255) NOT NULL,
+        tool_name VARCHAR(255) NOT NULL,
+        tool_arguments JSON NOT NULL,
+        tool_result LONGTEXT NULL,
+        error_message TEXT NULL,
+        started_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+        completed_at DATETIME(6) NULL,
+        UNIQUE KEY uq_agent_tool_calls_step_index (step_id, call_index),
+        UNIQUE KEY uq_agent_tool_calls_step_call (step_id, tool_call_id),
+        CONSTRAINT fk_agent_tool_calls_step FOREIGN KEY (step_id)
+          REFERENCES agent_steps (id) ON DELETE CASCADE,
+        CONSTRAINT chk_agent_tool_calls_status
+          CHECK (status IN ('running', 'completed', 'failed'))
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+    `)
+    await pool.execute(`
+      INSERT IGNORE INTO agent_tool_calls
+        (step_id, call_index, status, tool_call_id, tool_name, tool_arguments,
+         tool_result, error_message, started_at, completed_at)
+      SELECT id, 0, status, tool_call_id, tool_name, tool_arguments,
+             tool_result, error_message, started_at, completed_at
+      FROM agent_steps
+      WHERE output_kind = 'tool-call'
+        AND tool_call_id IS NOT NULL
+        AND tool_name IS NOT NULL
+        AND tool_arguments IS NOT NULL
+    `)
+    await pool.execute(`
+      UPDATE agent_steps
+      SET status = 'completed'
+      WHERE output_kind = 'tool-call' AND status = 'failed'
+    `)
+    await pool.execute('INSERT IGNORE INTO agent_schema_migrations (version) VALUES (3)')
+  }
 }
 
 async function lockSession(connection: PoolConnection, sessionId: string): Promise<void> {
@@ -378,21 +482,25 @@ async function applyRecord(
       )
       return
     }
-    case 'step.tool-called':
+    case 'step.tools-called': {
       await requireRunningTurn(connection, sessionId, record.turnId)
-      await connection.execute(
+      if (record.calls.length === 0) throw new Error('A tool Step must contain at least one call')
+      const [step] = await connection.execute<ResultSetHeader>(
         `INSERT INTO agent_steps
-           (turn_id, step_number, status, output_kind, tool_call_id, tool_name, tool_arguments)
-         VALUES (?, ?, 'running', 'tool-call', ?, ?, ?)`,
-        [
-          record.turnId,
-          record.step,
-          record.call.id,
-          record.call.name,
-          JSON.stringify(record.call.arguments),
-        ],
+           (turn_id, step_number, status, output_kind)
+         VALUES (?, ?, 'running', 'tool-call')`,
+        [record.turnId, record.step],
       )
+      for (const [callIndex, call] of record.calls.entries()) {
+        await connection.execute(
+          `INSERT INTO agent_tool_calls
+             (step_id, call_index, status, tool_call_id, tool_name, tool_arguments)
+           VALUES (?, ?, 'running', ?, ?, ?)`,
+          [step.insertId, callIndex, call.id, call.name, JSON.stringify(call.arguments ?? null)],
+        )
+      }
       return
+    }
     case 'step.tool-completed':
       await updateToolStep(connection, record, 'completed')
       return
@@ -456,13 +564,27 @@ async function updateToolStep(
   const value = record.type === 'step.tool-completed' ? record.result : record.error
   const column = record.type === 'step.tool-completed' ? 'tool_result' : 'error_message'
   const [result] = await connection.execute<ResultSetHeader>(
-    `UPDATE agent_steps
-     SET status = ?, ${column} = ?, completed_at = CURRENT_TIMESTAMP(6)
-     WHERE turn_id = ? AND step_number = ? AND tool_call_id = ?
-       AND output_kind = 'tool-call' AND status = 'running'`,
+    `UPDATE agent_tool_calls AS c
+     INNER JOIN agent_steps AS s ON s.id = c.step_id
+     SET c.status = ?, c.${column} = ?, c.completed_at = CURRENT_TIMESTAMP(6)
+     WHERE s.turn_id = ? AND s.step_number = ? AND c.tool_call_id = ?
+       AND s.output_kind = 'tool-call' AND c.status = 'running'`,
     [status, value, record.turnId, record.step, record.toolCallId],
   )
-  requireChanged(result, `Cannot ${status === 'completed' ? 'complete' : 'fail'} tool step ${record.step}`)
+  requireChanged(
+    result,
+    `Cannot ${status === 'completed' ? 'complete' : 'fail'} tool call ${record.toolCallId}`,
+  )
+  await connection.execute(
+    `UPDATE agent_steps AS s
+     SET s.status = 'completed', s.completed_at = CURRENT_TIMESTAMP(6)
+     WHERE s.turn_id = ? AND s.step_number = ? AND s.status = 'running'
+       AND NOT EXISTS (
+         SELECT 1 FROM agent_tool_calls AS c
+         WHERE c.step_id = s.id AND c.status = 'running'
+       )`,
+    [record.turnId, record.step],
+  )
 }
 
 function requireChanged(result: ResultSetHeader, message: string): void {
@@ -480,7 +602,7 @@ function toTurn(row: TurnRow, steps: readonly AgentStep[]): AgentTurn {
   }
 }
 
-function toStep(row: StepRow): AgentStep {
+function toStep(row: StepRow, executions: readonly AgentToolExecution[]): AgentStep {
   const status = readStepStatus(row.status)
   if (row.output_kind === 'final') {
     if (row.assistant_content === null) throw new Error(`Final step ${row.step_number} has no content`)
@@ -493,24 +615,24 @@ function toStep(row: StepRow): AgentStep {
   if (row.output_kind !== 'tool-call') {
     throw new Error(`Unknown step output kind: ${row.output_kind}`)
   }
-  if (row.tool_call_id === null || row.tool_name === null || row.tool_arguments === null) {
-    throw new Error(`Tool step ${row.step_number} is missing call data`)
-  }
-
-  const call: ToolCall = {
-    id: row.tool_call_id,
-    name: row.tool_name,
-    arguments: parseJson(row.tool_arguments),
-  }
+  if (executions.length === 0) throw new Error(`Tool step ${row.step_number} has no calls`)
   return {
     stepNumber: row.step_number,
     status,
-    output: {
-      kind: 'tool-call',
-      call,
-      ...(row.tool_result === null ? {} : { result: row.tool_result }),
-      ...(row.error_message === null ? {} : { error: row.error_message }),
+    output: { kind: 'tool-calls', executions },
+  }
+}
+
+function toToolExecution(row: ToolCallRow): AgentToolExecution {
+  return {
+    call: {
+      id: row.tool_call_id,
+      name: row.tool_name,
+      arguments: parseJson(row.tool_arguments),
     },
+    status: readToolExecutionStatus(row.status),
+    ...(row.tool_result === null ? {} : { result: row.tool_result }),
+    ...(row.error_message === null ? {} : { error: row.error_message }),
   }
 }
 
@@ -536,4 +658,9 @@ function readTurnStatus(value: string): TurnStatus {
 function readStepStatus(value: string): StepStatus {
   if (value === 'running' || value === 'completed' || value === 'failed') return value
   throw new Error(`Unknown step status: ${value}`)
+}
+
+function readToolExecutionStatus(value: string): 'running' | 'completed' | 'failed' {
+  if (value === 'running' || value === 'completed' || value === 'failed') return value
+  throw new Error(`Unknown tool execution status: ${value}`)
 }

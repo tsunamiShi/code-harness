@@ -9,6 +9,7 @@ import {
   ProjectCatalog,
   type ProjectRoot,
   type ProjectStore,
+  projectInstructions,
 } from '../src/project.ts'
 
 test('creates a project with one primary root and deduplicated attached roots', async t => {
@@ -47,6 +48,38 @@ test('rejects a workspace root that is not a directory', async t => {
   )
 })
 
+test('attaches a canonical directory to an existing project', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ai-agent-project-'))
+  t.after(async () => await rm(directory, { recursive: true, force: true }))
+  const primary = join(directory, 'primary')
+  const attached = join(directory, 'attached')
+  await Promise.all([mkdir(primary), mkdir(attached)])
+  const store = new RecordingProjectStore()
+  const catalog = new ProjectCatalog(store)
+  const project = await catalog.create({ name: 'workspace', primaryPath: primary })
+
+  const updated = await catalog.attach(project.id, attached)
+
+  assert.deepEqual(updated.roots, [
+    { path: await realpath(primary), role: 'primary' },
+    { path: await realpath(attached), role: 'attached' },
+  ])
+})
+
+test('full-access instructions allow arbitrary roots without changing the Project', () => {
+  const project: AgentProject = {
+    id: 'project-1',
+    name: 'workspace',
+    roots: [{ path: '/workspace/primary', role: 'primary' }],
+  }
+
+  const instructions = projectInstructions(project, 'full')
+
+  assert.match(instructions, /Filesystem access mode: full/)
+  assert.match(instructions, /any absolute local directory as root/)
+  assert.doesNotMatch(instructions, /Do not access paths outside/)
+})
+
 class RecordingProjectStore implements ProjectStore {
   private project: AgentProject | undefined
 
@@ -64,5 +97,17 @@ class RecordingProjectStore implements ProjectStore {
 
   async listProjects(): Promise<readonly AgentProject[]> {
     return this.project ? [this.project] : []
+  }
+
+  async attachRoot(projectId: string, path: string): Promise<AgentProject> {
+    if (!this.project || this.project.id !== projectId) {
+      throw new Error(`Unknown project: ${projectId}`)
+    }
+    if (this.project.roots.some(root => root.path === path)) return this.project
+    this.project = {
+      ...this.project,
+      roots: [...this.project.roots, { path, role: 'attached' }],
+    }
+    return this.project
   }
 }

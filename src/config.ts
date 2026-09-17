@@ -1,5 +1,7 @@
 import type { MysqlAgentStoreOptions } from './mysql-agent-store.ts'
 
+const DEFAULT_AGENT_MAX_STEPS = 50
+
 export function mysqlOptionsFromEnvironment(): MysqlAgentStoreOptions {
   return {
     host: process.env.MYSQL_HOST ?? '127.0.0.1',
@@ -14,6 +16,16 @@ export function requiredEnvironment(name: string): string {
   const value = process.env[name]
   if (!value) throw new Error(`Missing required environment variable: ${name}`)
   return value
+}
+
+export function agentMaxStepsFromEnvironment(): number {
+  const value = process.env.AGENT_MAX_STEPS
+  if (value === undefined) return DEFAULT_AGENT_MAX_STEPS
+  const maxSteps = Number(value)
+  if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > 500) {
+    throw new Error(`Invalid AGENT_MAX_STEPS: ${value}`)
+  }
+  return maxSteps
 }
 
 function readPort(value: string): number {

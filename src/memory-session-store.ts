@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import type {
   AgentSessionSnapshot,
   AgentStep,
+  AgentToolExecution,
   AgentTurn,
   SessionRecord,
   SessionStore,
@@ -42,12 +43,19 @@ export class MemorySessionStore implements SessionStore {
     }
 
     const turn = requireTurn(session, record.turnId)
-    if (record.type === 'step.tool-called') {
+    if (record.type === 'step.tools-called') {
       requireRunningTurn(turn)
+      if (record.calls.length === 0) throw new Error('A tool Step must contain at least one call')
       turn.steps.push({
         stepNumber: record.step,
         status: 'running',
-        output: { kind: 'tool-call', call: structuredClone(record.call) },
+        output: {
+          kind: 'tool-calls',
+          executions: record.calls.map(call => ({
+            call: structuredClone(call),
+            status: 'running',
+          })),
+        },
       })
       return
     }
@@ -76,15 +84,24 @@ export class MemorySessionStore implements SessionStore {
     }
 
     const step = requireStep(turn, record.step)
-    if (step.output.kind !== 'tool-call' || step.output.call.id !== record.toolCallId) {
+    if (step.output.kind !== 'tool-calls') {
+      throw new Error(`Tool call ${record.toolCallId} does not match step ${record.step}`)
+    }
+    const execution = step.output.executions.find(
+      candidate => candidate.call.id === record.toolCallId,
+    )
+    if (!execution || execution.status !== 'running') {
       throw new Error(`Tool call ${record.toolCallId} does not match step ${record.step}`)
     }
     if (record.type === 'step.tool-completed') {
-      step.status = 'completed'
-      step.output.result = record.result
+      execution.status = 'completed'
+      execution.result = record.result
     } else {
-      step.status = 'failed'
-      step.output.error = record.error
+      execution.status = 'failed'
+      execution.error = record.error
+    }
+    if (step.output.executions.every(candidate => candidate.status !== 'running')) {
+      step.status = 'completed'
     }
   }
 }
@@ -101,7 +118,12 @@ interface MutableTurn extends Omit<AgentTurn, 'steps'> {
   error?: string
 }
 
-type MutableStep = AgentStep
+interface MutableToolStep extends Omit<AgentStep, 'output'> {
+  output: { kind: 'tool-calls'; executions: MutableToolExecution[] }
+}
+
+type MutableToolExecution = AgentToolExecution
+type MutableStep = AgentStep | MutableToolStep
 
 function requireTurn(session: MutableSession, turnId: string): MutableTurn {
   const turn = session.turns.find(candidate => candidate.id === turnId)

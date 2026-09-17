@@ -7,6 +7,7 @@ test('accepts the pnpm argument separator passed through to the chat script', ()
   assert.deepEqual(readChatTarget(['--', '--project', 'project-1']), {
     kind: 'project',
     id: 'project-1',
+    accessMode: 'scoped',
   })
 })
 
@@ -14,5 +15,14 @@ test('accepts a session target without a retained separator', () => {
   assert.deepEqual(readChatTarget(['--session', 'session-1']), {
     kind: 'session',
     id: 'session-1',
+    accessMode: 'scoped',
+  })
+})
+
+test('enables full filesystem access for one CLI process', () => {
+  assert.deepEqual(readChatTarget(['--session', 'session-1', '--full-access']), {
+    kind: 'session',
+    id: 'session-1',
+    accessMode: 'full',
   })
 })

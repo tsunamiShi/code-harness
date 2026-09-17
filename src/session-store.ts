@@ -3,13 +3,21 @@ import type { Message, ToolCall } from './types.ts'
 export type SessionStatus = 'active'
 export type TurnStatus = 'running' | 'completed' | 'failed'
 export type StepStatus = 'running' | 'completed' | 'failed'
+export type ToolExecutionStatus = 'running' | 'completed' | 'failed'
+
+export interface AgentToolExecution {
+  call: ToolCall
+  status: ToolExecutionStatus
+  result?: string
+  error?: string
+}
 
 export interface AgentStep {
   stepNumber: number
   status: StepStatus
   output:
     | { kind: 'final'; content: string }
-    | { kind: 'tool-call'; call: ToolCall; result?: string; error?: string }
+    | { kind: 'tool-calls'; executions: readonly AgentToolExecution[] }
 }
 
 export interface AgentTurn {
@@ -30,7 +38,7 @@ export interface AgentSessionSnapshot {
 
 export type SessionRecord =
   | { type: 'turn.started'; turnId: string; prompt: string }
-  | { type: 'step.tool-called'; turnId: string; step: number; call: ToolCall }
+  | { type: 'step.tools-called'; turnId: string; step: number; calls: readonly ToolCall[] }
   | {
       type: 'step.tool-completed'
       turnId: string
@@ -65,18 +73,26 @@ export function projectMessages(snapshot: AgentSessionSnapshot): readonly Messag
 
     messages.push({ role: 'user', content: turn.prompt })
     for (const step of turn.steps) {
-      if (step.status !== 'completed') continue
       if (step.output.kind === 'final') {
-        messages.push({ role: 'assistant', content: step.output.content })
+        if (step.status === 'completed') {
+          messages.push({ role: 'assistant', content: step.output.content })
+        }
         continue
       }
-      if (step.output.result === undefined) continue
-      messages.push({ role: 'assistant', toolCall: step.output.call })
+      if (step.status !== 'completed') continue
       messages.push({
-        role: 'tool',
-        toolCallId: step.output.call.id,
-        content: step.output.result,
+        role: 'assistant',
+        toolCalls: step.output.executions.map(execution => execution.call),
       })
+      for (const execution of step.output.executions) {
+        const toolResult = execution.result ?? execution.error
+        if (toolResult === undefined) continue
+        messages.push({
+          role: 'tool',
+          toolCallId: execution.call.id,
+          content: toolResult,
+        })
+      }
     }
   }
 

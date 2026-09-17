@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
+import { mkdtemp, realpath, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 
 import mysql from 'mysql2/promise'
@@ -24,6 +27,7 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
 
   const options: MysqlAgentStoreOptions = { ...connection, database }
   let store: MysqlAgentStore | undefined
+  const attachedDirectory = await mkdtemp(join(tmpdir(), 'ai-agent-attached-'))
   try {
     store = await MysqlAgentStore.connect(options)
     const project = await new ProjectCatalog(store).create({
@@ -31,19 +35,28 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
       primaryPath: process.cwd(),
       additionalPaths: ['..'],
     })
+    const updatedProject = await new ProjectCatalog(store).attach(project.id, attachedDirectory)
+    assert.deepEqual(updatedProject.roots.at(-1), {
+      path: await realpath(attachedDirectory),
+      role: 'attached',
+    })
     let request = 0
     const model: Model = {
       async generate() {
         request += 1
         return request === 1
           ? {
-              kind: 'tool-call',
-              call: { id: 'call-1', name: 'search', arguments: { query: 'agent' } },
+              kind: 'tool-calls',
+              calls: [
+                { id: 'call-1', name: 'search', arguments: { query: 'agent' } },
+                { id: 'call-2', name: 'search', arguments: { query: 'runtime' } },
+              ],
             }
           : { kind: 'final', content: '第一轮完成' }
       },
     }
     const search: Tool = {
+      parallelSafe: true,
       description: {
         name: 'search',
         description: 'Search test data.',
@@ -53,7 +66,12 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
         return '测试结果'
       },
     }
-    const first = await AgentSession.create({ model, tools: [search], store, project })
+    const first = await AgentSession.create({
+      model,
+      tools: [search],
+      store,
+      project: updatedProject,
+    })
     await first.send('第一轮')
     const sessionId = first.id
     const snapshot = await store.loadSession(sessionId)
@@ -61,9 +79,16 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
     assert.equal(snapshot?.turns.length, 1)
     assert.equal(snapshot?.turns[0]?.steps.length, 2)
     assert.equal(snapshot?.turns[0]?.status, 'completed')
+    const toolStep = snapshot?.turns[0]?.steps[0]
+    assert.equal(toolStep?.output.kind, 'tool-calls')
+    if (toolStep?.output.kind === 'tool-calls') {
+      assert.equal(toolStep.output.executions.length, 2)
+    }
 
     await store.close()
     store = await MysqlAgentStore.connect(options)
+    const restoredProject = await new ProjectCatalog(store).get(project.id)
+    assert.deepEqual(restoredProject, updatedProject)
     let restoredMessages: readonly Message[] = []
     const resumed = await AgentSession.resume(sessionId, {
       model: {
@@ -74,18 +99,22 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
       },
       tools: [search],
       store,
-      project,
+      project: restoredProject,
     })
     await resumed.send('第二轮')
 
     assert.deepEqual(restoredMessages, [
-      { role: 'system', content: projectInstructions(project) },
+      { role: 'system', content: projectInstructions(restoredProject) },
       { role: 'user', content: '第一轮' },
       {
         role: 'assistant',
-        toolCall: { id: 'call-1', name: 'search', arguments: { query: 'agent' } },
+        toolCalls: [
+          { id: 'call-1', name: 'search', arguments: { query: 'agent' } },
+          { id: 'call-2', name: 'search', arguments: { query: 'runtime' } },
+        ],
       },
       { role: 'tool', toolCallId: 'call-1', content: '测试结果' },
+      { role: 'tool', toolCallId: 'call-2', content: '测试结果' },
       { role: 'assistant', content: '第一轮完成' },
       { role: 'user', content: '第二轮' },
     ])
@@ -93,5 +122,6 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
     await store?.close()
     await admin.query(`DROP DATABASE IF EXISTS \`${database}\``)
     await admin.end()
+    await rm(attachedDirectory, { recursive: true, force: true })
   }
 })

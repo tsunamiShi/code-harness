@@ -1,21 +1,66 @@
 import { randomUUID } from 'node:crypto'
 
 import { MemorySessionStore } from './memory-session-store.ts'
-import { projectInstructions, type AgentProject } from './project.ts'
+import {
+  projectInstructions,
+  type AgentProject,
+  type WorkspaceAccessMode,
+} from './project.ts'
 import { projectMessages, type SessionStore } from './session-store.ts'
-import type { Message, Model, Tool } from './types.ts'
+import type { Message, Model, ModelOutput, Tool, ToolCall } from './types.ts'
+
+const DEFAULT_MAX_STEPS = 50
 
 export interface AgentSessionOptions {
   model: Model
   tools: readonly Tool[]
   store: SessionStore
   project?: AgentProject
+  accessMode?: WorkspaceAccessMode
   maxSteps?: number
+  onEvent?: (event: AgentEvent) => void
 }
 
 export interface RunAgentOptions extends Omit<AgentSessionOptions, 'store'> {
   prompt: string
 }
+
+/** Runtime observations emitted in execution order for logs and user interfaces. */
+export type AgentEvent =
+  | { type: 'turn.started'; turnId: string; prompt: string }
+  | {
+      type: 'step.started'
+      turnId: string
+      step: number
+      messageCount: number
+      toolCount: number
+    }
+  | {
+      type: 'model.completed'
+      turnId: string
+      step: number
+      durationMs: number
+      output: ModelOutput
+    }
+  | {
+      type: 'tool.batch-started'
+      turnId: string
+      step: number
+      mode: 'parallel' | 'serial'
+      count: number
+    }
+  | { type: 'tool.started'; turnId: string; step: number; call: ToolCall }
+  | {
+      type: 'tool.completed'
+      turnId: string
+      step: number
+      call: ToolCall
+      durationMs: number
+      failed: boolean
+      content: string
+    }
+  | { type: 'turn.completed'; turnId: string; steps: number; durationMs: number }
+  | { type: 'turn.failed'; turnId: string; durationMs: number; error: string }
 
 /** Owns one durable conversation and executes one turn at a time. */
 export class AgentSession {
@@ -31,7 +76,7 @@ export class AgentSession {
     messages: readonly Message[],
   ) {
     this.messages = [...structuredClone(messages)]
-    this.maxSteps = options.maxSteps ?? 10
+    this.maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS
     if (!Number.isInteger(this.maxSteps) || this.maxSteps < 1) {
       throw new Error('maxSteps must be a positive integer')
     }
@@ -76,6 +121,7 @@ export class AgentSession {
 
     this.running = true
     const turnId = randomUUID()
+    const turnStartedAt = performance.now()
     const turnStart = this.messages.length
     let turnStarted = false
 
@@ -83,13 +129,30 @@ export class AgentSession {
       await this.options.store.record(this.id, { type: 'turn.started', turnId, prompt })
       turnStarted = true
       this.messages.push({ role: 'user', content: prompt })
+      this.emit({ type: 'turn.started', turnId, prompt })
 
       for (let step = 1; step <= this.maxSteps; step += 1) {
-        const output = await this.options.model.generate({
-          messages: this.modelMessages(),
-          tools: this.toolDescriptions,
+        const messages = this.modelMessages()
+        const tools = step === this.maxSteps ? [] : this.toolDescriptions
+        this.emit({
+          type: 'step.started',
+          turnId,
+          step,
+          messageCount: messages.length,
+          toolCount: tools.length,
         })
-        console.log(JSON.stringify(output, null, 2))
+        const modelStartedAt = performance.now()
+        const output = await this.options.model.generate({
+          messages,
+          tools,
+        })
+        this.emit({
+          type: 'model.completed',
+          turnId,
+          step,
+          durationMs: performance.now() - modelStartedAt,
+          output: structuredClone(output),
+        })
 
         if (output.kind === 'final') {
           await this.options.store.record(this.id, {
@@ -100,39 +163,48 @@ export class AgentSession {
           })
           this.messages.push({ role: 'assistant', content: output.content })
           await this.options.store.record(this.id, { type: 'turn.completed', turnId })
+          this.emit({
+            type: 'turn.completed',
+            turnId,
+            steps: step,
+            durationMs: performance.now() - turnStartedAt,
+          })
           return output.content
         }
 
+        validateToolCalls(output.calls)
         await this.options.store.record(this.id, {
-          type: 'step.tool-called',
+          type: 'step.tools-called',
           turnId,
           step,
-          call: output.call,
+          calls: output.calls,
         })
-        this.messages.push({ role: 'assistant', toolCall: output.call })
-        const tool = this.toolsByName.get(output.call.name)
+        this.messages.push({ role: 'assistant', toolCalls: structuredClone(output.calls) })
 
-        try {
-          const result = tool
-            ? await tool.execute(output.call.arguments)
-            : `Error: unknown tool "${output.call.name}"`
-          await this.options.store.record(this.id, {
-            type: 'step.tool-completed',
-            turnId,
-            step,
-            toolCallId: output.call.id,
-            result,
+        const executions = await this.executeToolCalls(turnId, step, output.calls)
+        for (const execution of executions) {
+          if (execution.failed) {
+            await this.options.store.record(this.id, {
+              type: 'step.tool-failed',
+              turnId,
+              step,
+              toolCallId: execution.call.id,
+              error: execution.content,
+            })
+          } else {
+            await this.options.store.record(this.id, {
+              type: 'step.tool-completed',
+              turnId,
+              step,
+              toolCallId: execution.call.id,
+              result: execution.content,
+            })
+          }
+          this.messages.push({
+            role: 'tool',
+            toolCallId: execution.call.id,
+            content: execution.content,
           })
-          this.messages.push({ role: 'tool', toolCallId: output.call.id, content: result })
-        } catch (error: unknown) {
-          await this.options.store.record(this.id, {
-            type: 'step.tool-failed',
-            turnId,
-            step,
-            toolCallId: output.call.id,
-            error: errorMessage(error),
-          })
-          throw error
         }
       }
 
@@ -143,6 +215,12 @@ export class AgentSession {
         await this.options.store.record(this.id, {
           type: 'turn.failed',
           turnId,
+          error: errorMessage(error),
+        })
+        this.emit({
+          type: 'turn.failed',
+          turnId,
+          durationMs: performance.now() - turnStartedAt,
           error: errorMessage(error),
         })
       }
@@ -160,9 +238,91 @@ export class AgentSession {
   private modelMessages(): readonly Message[] {
     if (!this.options.project) return this.messages
     return [
-      { role: 'system', content: projectInstructions(this.options.project) },
+      {
+        role: 'system',
+        content: projectInstructions(this.options.project, this.options.accessMode),
+      },
       ...this.messages,
     ]
+  }
+
+  private async executeToolCalls(
+    turnId: string,
+    step: number,
+    calls: readonly ToolCall[],
+  ): Promise<readonly ToolExecutionResult[]> {
+    const parallel = calls.every(
+      call => this.toolsByName.get(call.name)?.parallelSafe === true,
+    )
+    this.emit({
+      type: 'tool.batch-started',
+      turnId,
+      step,
+      mode: parallel ? 'parallel' : 'serial',
+      count: calls.length,
+    })
+    if (parallel) {
+      return await Promise.all(calls.map(call => this.executeToolCall(turnId, step, call)))
+    }
+
+    const results: ToolExecutionResult[] = []
+    for (const call of calls) {
+      results.push(await this.executeToolCall(turnId, step, call))
+    }
+    return results
+  }
+
+  private async executeToolCall(
+    turnId: string,
+    step: number,
+    call: ToolCall,
+  ): Promise<ToolExecutionResult> {
+    const startedAt = performance.now()
+    this.emit({ type: 'tool.started', turnId, step, call: structuredClone(call) })
+    const tool = this.toolsByName.get(call.name)
+    if (!tool) {
+      return this.completeToolExecution(
+        turnId,
+        step,
+        startedAt,
+        { call, failed: true, content: `Error: unknown tool "${call.name}"` },
+      )
+    }
+    try {
+      return this.completeToolExecution(turnId, step, startedAt, {
+        call,
+        failed: false,
+        content: await tool.execute(call.arguments),
+      })
+    } catch (error: unknown) {
+      return this.completeToolExecution(turnId, step, startedAt, {
+        call,
+        failed: true,
+        content: `Error: ${errorMessage(error)}`,
+      })
+    }
+  }
+
+  private completeToolExecution(
+    turnId: string,
+    step: number,
+    startedAt: number,
+    execution: ToolExecutionResult,
+  ): ToolExecutionResult {
+    this.emit({
+      type: 'tool.completed',
+      turnId,
+      step,
+      call: structuredClone(execution.call),
+      durationMs: performance.now() - startedAt,
+      failed: execution.failed,
+      content: execution.content,
+    })
+    return execution
+  }
+
+  private emit(event: AgentEvent): void {
+    this.options.onEvent?.(event)
   }
 }
 
@@ -172,16 +332,31 @@ export async function runAgent({
   tools,
   prompt,
   maxSteps,
+  onEvent,
 }: RunAgentOptions): Promise<string> {
   const session = await AgentSession.create({
     model,
     tools,
     store: new MemorySessionStore(),
     ...(maxSteps === undefined ? {} : { maxSteps }),
+    ...(onEvent === undefined ? {} : { onEvent }),
   })
   return await session.send(prompt)
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+interface ToolExecutionResult {
+  call: ToolCall
+  failed: boolean
+  content: string
+}
+
+function validateToolCalls(calls: readonly ToolCall[]): void {
+  if (calls.length === 0) throw new Error('Model returned an empty tool-call batch')
+  if (new Set(calls.map(call => call.id)).size !== calls.length) {
+    throw new Error('Model returned duplicate tool-call ids in one step')
+  }
 }

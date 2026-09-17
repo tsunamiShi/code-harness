@@ -33,37 +33,50 @@ export class QwenModel implements Model {
     const completion = await this.client.chat.completions.create({
       model: this.options.model,
       messages: input.messages.map(toProviderMessage),
-      tools: input.tools.map(toProviderTool),
-      parallel_tool_calls: false,
+      ...(input.tools.length === 0
+        ? {}
+        : {
+            tools: input.tools.map(toProviderTool),
+            parallel_tool_calls: true,
+          }),
     });
     const message = completion.choices[0]?.message;
     if (!message) throw new Error("Qwen returned no completion choice");
 
     const calls = message.tool_calls ?? [];
-    if (calls.length > 1) {
-      throw new Error(
-        `Qwen returned ${calls.length} tool calls, but this runtime supports one per step`,
-      );
-    }
-    const call = calls[0];
-    if (call) {
-      if (call.type !== "function") {
-        throw new Error(`Unsupported Qwen tool call type: ${call.type}`);
-      }
+    const reasoningContent = readReasoningContent(message);
+    const content = message.content ?? undefined;
+    if (calls.length > 0) {
       return {
-        kind: "tool-call",
-        call: {
-          id: call.id,
-          name: call.function.name,
-          arguments: parseArguments(call.function.arguments),
-        },
+        kind: "tool-calls",
+        calls: calls.map(call => {
+          if (call.type !== "function") {
+            throw new Error(`Unsupported Qwen tool call type: ${call.type}`);
+          }
+          return {
+            id: call.id,
+            name: call.function.name,
+            arguments: parseArguments(call.function.arguments),
+          };
+        }),
+        ...(content === undefined ? {} : { content }),
+        ...(reasoningContent === undefined ? {} : { reasoningContent }),
       };
     }
 
     if (!message.content)
       throw new Error("Qwen returned neither a tool call nor text");
-    return { kind: "final", content: message.content };
+    return {
+      kind: "final",
+      content: message.content,
+      ...(reasoningContent === undefined ? {} : { reasoningContent }),
+    };
   }
+}
+
+function readReasoningContent(message: object): string | undefined {
+  const value = Reflect.get(message, "reasoning_content");
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function toProviderTool(tool: ToolDescription): ChatCompletionTool {
@@ -87,20 +100,18 @@ function toProviderMessage(message: Message): ChatCompletionMessageParam {
       content: message.content,
     };
   }
-  if ("toolCall" in message) {
+  if ("toolCalls" in message) {
     return {
       role: "assistant",
       content: null,
-      tool_calls: [
-        {
-          id: message.toolCall.id,
+      tool_calls: message.toolCalls.map(toolCall => ({
+          id: toolCall.id,
           type: "function",
           function: {
-            name: message.toolCall.name,
-            arguments: JSON.stringify(message.toolCall.arguments),
+            name: toolCall.name,
+            arguments: JSON.stringify(toolCall.arguments),
           },
-        },
-      ],
+        })),
     };
   }
   return message;

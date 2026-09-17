@@ -11,11 +11,11 @@
 _Avoid_: Model、Assistant
 
 **Agent Loop**:
-Turn 内由模型推理、可选工具执行和结果反馈组成的迭代过程，直到得到最终答案、失败或达到 Step 上限。
+Turn 内由模型推理、可选 Tool Call Batch 执行和结果反馈组成的迭代过程，直到得到最终答案、失败或达到 Step 上限。
 _Avoid_: Session、Turn
 
 **Model**:
-根据当前 Messages 和可用 Tools 返回最终答案或 Tool Call 的决策能力。
+根据当前 Messages 和可用 Tools 返回最终答案或 Tool Call Batch 的决策能力。
 _Avoid_: Agent、Provider
 
 **Tool**:
@@ -29,6 +29,10 @@ _Avoid_: Tool、Action
 **Tool Result**:
 Runtime 执行 Tool Call 后产生并反馈给模型的结果，属于发起调用的同一个 Step。
 _Avoid_: Final Answer、Message
+
+**Tool Call Batch**:
+模型在一个 Step 中返回的一组 Tool Calls。仅当所有目标 Tools 都声明为 parallel-safe 时并行执行，仍然只计为一个 Step。
+_Avoid_: Multi-Step、Read Many
 
 ### Project workspace
 
@@ -48,6 +52,26 @@ _Avoid_: Current Directory、Main Project
 Project 中除 Primary Root 外的授权目录，不改变默认工作目录。
 _Avoid_: Secondary Project、Dependency
 
+**Workspace Tool**:
+绑定到一个 Project，并在所选 Workspace Root 内执行文件操作的 Tool。路径授权由 Runtime 强制执行，不依赖模型遵守 Prompt。
+_Avoid_: Global Tool、Project Tool
+
+**Workspace Access Mode**:
+当前 CLI 进程对 Workspace Tool 的 Root 授权策略。`scoped` 只允许 Project Roots，`full` 允许任意本地绝对目录；不属于 Session 持久状态。
+_Avoid_: Project Permission、Session Permission
+
+**Read**:
+读取 Workspace Root 内一个 UTF-8 文本文件的有界行范围。
+_Avoid_: Fetch、Open
+
+**Glob**:
+按相对路径模式查找 Workspace Root 内的候选文件。
+_Avoid_: List Files、Find Files
+
+**Grep**:
+按正则表达式搜索 Workspace Root 内的文件内容，并返回匹配文件和行号。
+_Avoid_: Search Text、Search
+
 ### Conversation lifecycle
 
 **Session**:
@@ -59,9 +83,23 @@ _Avoid_: Conversation、Chat
 _Avoid_: Round、Request
 
 **Step**:
-Turn 内的一次模型推理；结果是最终答案，或者一次需要执行的 Tool Call。
+Turn 内的一次模型推理；结果是最终答案，或者一组需要执行的 Tool Calls。
 _Avoid_: Turn、Action
 
 **Message**:
 提供给模型的上下文条目。Message 是已完成 Turn 的投影，不等同于完整执行记录。
 _Avoid_: Event、Log
+
+### Observability
+
+**Agent Event**:
+Runtime 在执行过程中同步发出的只读观察记录，用于 CLI 时间线、日志或未来 UI；不会成为 Message，也不改变 Agent 决策。
+_Avoid_: Message、Session Record
+
+**Execution Trace**:
+一个 Turn 的 Agent Events 按发生顺序形成的可观察执行链路，包括模型请求、模型输出、Tool Call、Tool Result、耗时和最终状态。
+_Avoid_: Message History、Model Context
+
+**Reasoning Content**:
+模型供应商在响应中显式返回的推理文本。Runtime 只透传真实字段；供应商未返回时明确显示 unavailable，不从 Final Content 推测或生成。
+_Avoid_: Hidden Reasoning、Explanation

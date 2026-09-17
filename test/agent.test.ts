@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { AgentSession, runAgent } from '../src/agent.ts'
+import { AgentSession, runAgent, type AgentEvent } from '../src/agent.ts'
 import { MemorySessionStore } from '../src/memory-session-store.ts'
 import type { Message, Model, ModelOutput, Tool } from '../src/types.ts'
 
@@ -14,8 +14,8 @@ test('feeds a tool result back to the model before returning the final answer', 
       call += 1
       return call === 1
         ? {
-            kind: 'tool-call',
-            call: { id: 'call-1', name: 'search', arguments: { query: 'Nvidia' } },
+            kind: 'tool-calls',
+            calls: [{ id: 'call-1', name: 'search', arguments: { query: 'Nvidia' } }],
           }
         : { kind: 'final', content: 'done' }
     },
@@ -39,18 +39,79 @@ test('feeds a tool result back to the model before returning the final answer', 
     { role: 'user', content: 'research' },
     {
       role: 'assistant',
-      toolCall: { id: 'call-1', name: 'search', arguments: { query: 'Nvidia' } },
+      toolCalls: [{ id: 'call-1', name: 'search', arguments: { query: 'Nvidia' } }],
     },
     { role: 'tool', toolCallId: 'call-1', content: 'result' },
   ])
+})
+
+test('emits an observable execution chain with provider reasoning and tool content', async () => {
+  const events: AgentEvent[] = []
+  let request = 0
+  const model: Model = {
+    async generate() {
+      request += 1
+      return request === 1
+        ? {
+            kind: 'tool-calls',
+            reasoningContent: 'I need to inspect the file.',
+            calls: [{ id: 'call-read', name: 'Read', arguments: { path: 'src/app.ts' } }],
+          }
+        : {
+            kind: 'final',
+            reasoningContent: 'The tool result is sufficient.',
+            content: 'The file exports app.',
+          }
+    },
+  }
+  const read: Tool = {
+    parallelSafe: true,
+    description: { name: 'Read', description: 'Read.', parameters: {} },
+    async execute() {
+      return 'export const app = true'
+    },
+  }
+
+  await runAgent({
+    model,
+    tools: [read],
+    prompt: 'inspect',
+    onEvent: event => events.push(structuredClone(event)),
+  })
+
+  assert.deepEqual(events.map(event => event.type), [
+    'turn.started',
+    'step.started',
+    'model.completed',
+    'tool.batch-started',
+    'tool.started',
+    'tool.completed',
+    'step.started',
+    'model.completed',
+    'turn.completed',
+  ])
+  const firstModel = events.find(event =>
+    event.type === 'model.completed' && event.step === 1
+  )
+  assert.equal(
+    firstModel?.type === 'model.completed'
+      ? firstModel.output.reasoningContent
+      : undefined,
+    'I need to inspect the file.',
+  )
+  const toolResult = events.find(event => event.type === 'tool.completed')
+  assert.equal(
+    toolResult?.type === 'tool.completed' ? toolResult.content : undefined,
+    'export const app = true',
+  )
 })
 
 test('stops an agent that never produces a final answer', async () => {
   const model: Model = {
     async generate() {
       return {
-        kind: 'tool-call' as const,
-        call: { id: 'loop', name: 'search', arguments: {} },
+        kind: 'tool-calls' as const,
+        calls: [{ id: 'loop', name: 'search', arguments: {} }],
       }
     },
   }
@@ -69,6 +130,117 @@ test('stops an agent that never produces a final answer', async () => {
     runAgent({ model, tools: [search], prompt: 'loop', maxSteps: 2 }),
     /2-step limit/,
   )
+})
+
+test('allows ten tool steps followed by a final answer with the default budget', async () => {
+  let request = 0
+  const model: Model = {
+    async generate() {
+      request += 1
+      if (request <= 10) {
+        return {
+          kind: 'tool-calls',
+          calls: [{ id: `call-${request}`, name: 'search', arguments: {} }],
+        }
+      }
+      return { kind: 'final', content: 'done after exploration' }
+    },
+  }
+  const search: Tool = {
+    description: { name: 'search', description: 'Search.', parameters: {} },
+    async execute() {
+      return 'result'
+    },
+  }
+
+  assert.equal(
+    await runAgent({ model, tools: [search], prompt: 'explore' }),
+    'done after exploration',
+  )
+  assert.equal(request, 11)
+})
+
+test('reserves the final available step for an answer without tools', async () => {
+  let request = 0
+  const model: Model = {
+    async generate(input) {
+      request += 1
+      if (input.tools.length === 0) return { kind: 'final', content: 'budget summary' }
+      return {
+        kind: 'tool-calls',
+        calls: [{ id: `call-${request}`, name: 'search', arguments: {} }],
+      }
+    },
+  }
+  const search: Tool = {
+    description: { name: 'search', description: 'Search.', parameters: {} },
+    async execute() {
+      return 'result'
+    },
+  }
+
+  assert.equal(
+    await runAgent({ model, tools: [search], prompt: 'explore', maxSteps: 3 }),
+    'budget summary',
+  )
+  assert.equal(request, 3)
+})
+
+test('executes a parallel-safe tool batch concurrently within one step', async () => {
+  let request = 0
+  let active = 0
+  let maximumActive = 0
+  const model: Model = {
+    async generate(input) {
+      request += 1
+      if (request === 1) {
+        return {
+          kind: 'tool-calls',
+          calls: [
+            { id: 'call-a', name: 'Read', arguments: { path: 'a.ts' } },
+            { id: 'call-b', name: 'Read', arguments: { path: 'b.ts' } },
+          ],
+        }
+      }
+      assert.deepEqual(input.messages.slice(-3), [
+        {
+          role: 'assistant',
+          toolCalls: [
+            { id: 'call-a', name: 'Read', arguments: { path: 'a.ts' } },
+            { id: 'call-b', name: 'Read', arguments: { path: 'b.ts' } },
+          ],
+        },
+        { role: 'tool', toolCallId: 'call-a', content: 'a.ts' },
+        { role: 'tool', toolCallId: 'call-b', content: 'b.ts' },
+      ])
+      return { kind: 'final', content: 'done' }
+    },
+  }
+  const read: Tool = {
+    parallelSafe: true,
+    description: { name: 'Read', description: 'Read.', parameters: {} },
+    async execute(arguments_) {
+      active += 1
+      maximumActive = Math.max(maximumActive, active)
+      await new Promise(resolve => setTimeout(resolve, 10))
+      active -= 1
+      assert.ok(typeof arguments_ === 'object' && arguments_ !== null)
+      const path = Reflect.get(arguments_, 'path')
+      assert.equal(typeof path, 'string')
+      return path
+    },
+  }
+  const store = new MemorySessionStore()
+  const session = await AgentSession.create({ model, tools: [read], store })
+
+  assert.equal(await session.send('read both'), 'done')
+  assert.equal(maximumActive, 2)
+  const snapshot = await store.loadSession(session.id)
+  const firstStep = snapshot?.turns[0]?.steps[0]
+  assert.equal(firstStep?.output.kind, 'tool-calls')
+  if (firstStep?.output.kind === 'tool-calls') {
+    assert.equal(firstStep.output.executions.length, 2)
+  }
 })
 
 test('keeps completed turns in the next model request', async () => {
@@ -179,5 +351,50 @@ test('restores completed turns from durable session state', async () => {
     { role: 'user', content: '暗号是蓝鲸' },
     { role: 'assistant', content: '记住了' },
     { role: 'user', content: '暗号是什么？' },
+  ])
+})
+
+test('returns a tool error to the model and restores it with the completed turn', async () => {
+  const store = new MemorySessionStore()
+  let request = 0
+  const model: Model = {
+    async generate(input) {
+      request += 1
+      if (request === 1) {
+        return {
+          kind: 'tool-calls',
+          calls: [{ id: 'call-read', name: 'Read', arguments: { path: '../secret' } }],
+        }
+      }
+      assert.deepEqual(input.messages.at(-1), {
+        role: 'tool',
+        toolCallId: 'call-read',
+        content: 'Error: path denied',
+      })
+      return { kind: 'final', content: '无法读取该路径' }
+    },
+  }
+  const read: Tool = {
+    description: { name: 'Read', description: 'Read a file.', parameters: {} },
+    async execute() {
+      throw new Error('path denied')
+    },
+  }
+  const first = await AgentSession.create({ model, tools: [read], store })
+
+  assert.equal(await first.send('读取文件'), '无法读取该路径')
+  const resumed = await AgentSession.resume(first.id, {
+    model: { async generate() { return { kind: 'final', content: 'done' } } },
+    tools: [read],
+    store,
+  })
+  assert.deepEqual(resumed.history(), [
+    { role: 'user', content: '读取文件' },
+    {
+      role: 'assistant',
+      toolCalls: [{ id: 'call-read', name: 'Read', arguments: { path: '../secret' } }],
+    },
+    { role: 'tool', toolCallId: 'call-read', content: 'Error: path denied' },
+    { role: 'assistant', content: '无法读取该路径' },
   ])
 })

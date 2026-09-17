@@ -3,11 +3,16 @@ import { createInterface } from 'node:readline/promises'
 
 import { AgentSession } from './agent.ts'
 import { readChatTarget } from './cli-arguments.ts'
-import { mysqlOptionsFromEnvironment, requiredEnvironment } from './config.ts'
+import { createConsoleTrace } from './console-trace.ts'
+import {
+  agentMaxStepsFromEnvironment,
+  mysqlOptionsFromEnvironment,
+  requiredEnvironment,
+} from './config.ts'
 import { MysqlAgentStore } from './mysql-agent-store.ts'
 import { primaryRoot, ProjectCatalog } from './project.ts'
 import { QwenModel } from './qwen-model.ts'
-import { currentTimeTool } from './tools/current-time.ts'
+import { createWorkspaceTools } from './workspace-tools.ts'
 
 const store = await MysqlAgentStore.connect(mysqlOptionsFromEnvironment())
 const catalog = new ProjectCatalog(store)
@@ -21,9 +26,15 @@ const sessionOptions = {
     baseURL: requiredEnvironment('DASHSCOPE_BASE_URL'),
     model: requiredEnvironment('DASHSCOPE_MODEL'),
   }),
-  tools: [currentTimeTool],
+  tools: createWorkspaceTools(project, target.accessMode),
   store,
   project,
+  accessMode: target.accessMode,
+  maxSteps: agentMaxStepsFromEnvironment(),
+  onEvent: createConsoleTrace({
+    write: text => console.log(text),
+    colors: stdout.isTTY && process.env.NO_COLOR === undefined,
+  }),
 }
 const session = target.kind === 'session'
   ? await AgentSession.resume(target.id, sessionOptions)
@@ -32,6 +43,7 @@ const terminal = createInterface({ input: stdin, output: stdout })
 
 console.log(`Project: ${project.name}`)
 console.log(`Working directory: ${primaryRoot(project).path}`)
+console.log(`Filesystem access: ${target.accessMode}`)
 console.log(`Session: ${session.id}`)
 console.log('Enter /exit to quit. Resume later with: pnpm chat -- --session <session-id>')
 
@@ -42,8 +54,7 @@ try {
     if (!prompt) continue
 
     try {
-      const answer = await session.send(prompt)
-      console.log(`Agent> ${answer}`)
+      await session.send(prompt)
     } catch (error: unknown) {
       console.error(`Agent error: ${error instanceof Error ? error.message : String(error)}`)
     }

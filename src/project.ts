@@ -1,6 +1,7 @@
 import { stat, realpath } from 'node:fs/promises'
 
 export type ProjectRootRole = 'primary' | 'attached'
+export type WorkspaceAccessMode = 'scoped' | 'full'
 
 export interface ProjectRoot {
   path: string
@@ -26,6 +27,7 @@ export interface ProjectStore {
   }): Promise<AgentProject>
   loadProject(projectId: string): Promise<AgentProject | undefined>
   listProjects(): Promise<readonly AgentProject[]>
+  attachRoot(projectId: string, path: string): Promise<AgentProject>
 }
 
 /** Validates local directories and persists projects through a ProjectStore adapter. */
@@ -62,6 +64,12 @@ export class ProjectCatalog {
   async list(): Promise<readonly AgentProject[]> {
     return await this.store.listProjects()
   }
+
+  /** Adds one canonical directory as an Attached Root and returns the updated Project. */
+  async attach(projectId: string, path: string): Promise<AgentProject> {
+    const resolvedPath = await resolveDirectory(path)
+    return await this.store.attachRoot(projectId, resolvedPath)
+  }
 }
 
 export function primaryRoot(project: AgentProject): ProjectRoot {
@@ -72,18 +80,29 @@ export function primaryRoot(project: AgentProject): ProjectRoot {
   return roots[0]!
 }
 
-/** Produces stable model instructions from the durable Project definition. */
-export function projectInstructions(project: AgentProject): string {
+/** Produces stable model instructions from the Project and current runtime access mode. */
+export function projectInstructions(
+  project: AgentProject,
+  accessMode: WorkspaceAccessMode = 'scoped',
+): string {
   const primary = primaryRoot(project)
   const roots = project.roots.map(root => `- ${root.path} (${root.role})`).join('\n')
-  return [
+  const instructions = [
     `Project: ${project.name}`,
     `Primary working directory: ${primary.path}`,
     'Workspace roots:',
     roots,
     'Resolve relative paths against the primary working directory.',
-    'Do not access paths outside the listed workspace roots.',
-  ].join('\n')
+  ]
+  if (accessMode === 'full') {
+    instructions.push(
+      'Filesystem access mode: full.',
+      'Read, Glob, and Grep may select any absolute local directory as root; path remains relative to that root.',
+    )
+  } else {
+    instructions.push('Do not access paths outside the listed workspace roots.')
+  }
+  return instructions.join('\n')
 }
 
 async function resolveDirectory(path: string): Promise<string> {
