@@ -1,58 +1,83 @@
 # AI Agent
 
-这是一个从最小 Agent Loop 开始、逐步演进 AI Agent 系统设计的学习项目。
+这是一个从最小 Agent Loop 演进为可部署 Code Agent 的 TypeScript 项目。当前版本支持真实模型、工具调用、多轮对话、Multi-root Project，以及 MySQL 持久化和恢复。
 
-## 当前版本：Multi-turn Session + LLM + Tools
+## 当前运行模型
 
 ```text
-User
-  -> AgentSession.send()
-  -> Model
-  -> Tool call
-  -> Tool result
-  -> Model
-  -> Final answer
-  -> retain completed turn
-  -> next AgentSession.send()
+Project
+  ├─ Primary Root（默认工作目录）
+  ├─ Attached Root
+  └─ Session（可恢复的连续对话）
+       └─ Turn（一次用户输入到最终答案或失败）
+            └─ Step（一次模型推理，以及可选的一次工具执行）
 ```
 
-第一版只有三个概念：
+`ProjectCatalog` 管理本地目录选择，`AgentSession` 控制 Agent Loop，`Model` 适配模型供应商，`Tool` 暴露外部能力，存储接口隔离持久化实现。正式 CLI 使用 `MysqlAgentStore`；一次性调用和单元测试可使用内存 Adapter。
 
-- `Model`：根据消息历史选择调用工具或返回最终答案。
-- `Tool`：执行一个外部能力并返回文本结果。
-- `AgentSession`：拥有多轮消息历史，每次串行执行一个 Turn。
-- `runAgent()`：为不需要多轮状态的调用方提供一次性兼容入口。
+数据库保留完成和失败的 Turn/Step。发送给模型的 `messages` 只从已完成 Turn 投影，失败记录不会污染后续上下文。
 
-`src/demo.ts` 使用确定性的脚本模型和虚构数据，因此不需要 API Key。它只承担可重复测试，不是产品运行入口。
+## 准备 MySQL
 
-`src/live-agent.ts` 使用阿里云百炼的真实模型。模型收到消息和 JSON Schema 工具描述，自主决定是否调用工具；本地 Runtime 执行工具，再把结果返回模型。
+创建本地数据库：
+
+```sh
+mysql -uroot -e "CREATE DATABASE IF NOT EXISTS ai_agent CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"
+```
+
+应用启动时会自动执行当前数据库迁移。连接配置和模型配置都从被 Git 忽略的 `.env` 读取，字段参见 `.env.example`。
 
 ## 运行
 
 ```sh
 pnpm install
+pnpm typecheck
 pnpm test
-pnpm demo
-pnpm agent
-pnpm chat
+pnpm test:mysql
 ```
 
-真实调用从被 Git 忽略的 `.env` 读取：
+先创建 Project。`--primary` 必须出现一次，`--root` 可以重复：
 
-```text
-DASHSCOPE_API_KEY=...
-DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-DASHSCOPE_MODEL=qwen-plus
+```sh
+pnpm project create \
+  --name my-project \
+  --primary /absolute/path/to/main-repository \
+  --root /absolute/path/to/shared-package
+pnpm project list
+pnpm project show <project-id>
 ```
 
-提交配置模板 `.env.example`，不要提交 `.env`。
+从 Project 创建新 Session：
 
-`pnpm chat` 启动真实多轮 CLI；输入 `/exit` 退出。当前 Session 位于进程内存中，退出 CLI 后不会恢复。
+```sh
+pnpm chat -- --project <project-id>
+```
+
+CLI 会显示 Primary Root 和新 Session ID。正常退出后可以恢复：
+
+```sh
+pnpm chat -- --session <session-id>
+```
+
+## 数据表
+
+- `agent_projects`：可复用的 Project 身份。
+- `agent_project_roots`：Primary Root 和 Attached Roots。
+- `agent_sessions`：Session 身份与生命周期。
+- `agent_turns`：用户输入、顺序、完成/失败状态和错误。
+- `agent_steps`：模型最终输出或工具调用、参数、结果和错误。
+- `agent_schema_migrations`：已应用的数据库结构版本。
 
 ## Architecture decisions
 
 - [ADR-001: Session owns multi-turn conversation history](docs/decisions/001-session-owns-conversation-history.md)
+- [ADR-002: MySQL persists Sessions, Turns, and Steps](docs/decisions/002-mysql-persists-session-turns-and-steps.md)
+- [ADR-003: Project groups workspace roots and selects one primary root](docs/decisions/003-project-groups-workspace-roots.md)
 
-## 暂不加入
+## 当前限制
 
-Planner、Memory、Multi-Agent、持久化和权限留给后续需求驱动的演进。当前真实模型 Adapter 已设置请求超时和一次网络重试，但还没有 Agent 级重试策略。消息历史也还没有压缩或上下文窗口预算。
+- 单个 Session 同时只允许一个运行中的 Turn。
+- Project Root 已进入模型上下文，但文件和 Shell 工具尚未实现强制路径检查。
+- 异常退出可能留下 `running` Turn；尚未实现租约和自动恢复。
+- 工具副作用与结果入库不是一个原子事务；自动重试前需要幂等键或 outbox。
+- 长对话尚未加入上下文窗口预算、摘要和裁剪策略。

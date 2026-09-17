@@ -78,6 +78,7 @@ function toProviderTool(tool: ToolDescription): ChatCompletionTool {
 }
 
 function toProviderMessage(message: Message): ChatCompletionMessageParam {
+  if (message.role === "system") return message;
   if (message.role === "user") return message;
   if (message.role === "tool") {
     return {

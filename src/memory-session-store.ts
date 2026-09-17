@@ -1,0 +1,120 @@
+import { randomUUID } from 'node:crypto'
+
+import type {
+  AgentSessionSnapshot,
+  AgentStep,
+  AgentTurn,
+  SessionRecord,
+  SessionStore,
+} from './session-store.ts'
+
+/** In-memory SessionStore adapter for isolated tests and disposable runs. */
+export class MemorySessionStore implements SessionStore {
+  private readonly sessions = new Map<string, MutableSession>()
+
+  async createSession(projectId: string | null): Promise<string> {
+    const id = randomUUID()
+    this.sessions.set(id, { id, projectId, status: 'active', turns: [] })
+    return id
+  }
+
+  async loadSession(sessionId: string): Promise<AgentSessionSnapshot | undefined> {
+    const session = this.sessions.get(sessionId)
+    return session === undefined ? undefined : structuredClone(session)
+  }
+
+  async record(sessionId: string, record: SessionRecord): Promise<void> {
+    const session = this.sessions.get(sessionId)
+    if (!session) throw new Error(`Unknown session: ${sessionId}`)
+
+    if (record.type === 'turn.started') {
+      if (session.turns.some(turn => turn.status === 'running')) {
+        throw new Error(`Session ${sessionId} already has a running turn`)
+      }
+      session.turns.push({
+        id: record.turnId,
+        turnNumber: session.turns.length + 1,
+        status: 'running',
+        prompt: record.prompt,
+        steps: [],
+      })
+      return
+    }
+
+    const turn = requireTurn(session, record.turnId)
+    if (record.type === 'step.tool-called') {
+      requireRunningTurn(turn)
+      turn.steps.push({
+        stepNumber: record.step,
+        status: 'running',
+        output: { kind: 'tool-call', call: structuredClone(record.call) },
+      })
+      return
+    }
+
+    if (record.type === 'step.finalized') {
+      requireRunningTurn(turn)
+      turn.steps.push({
+        stepNumber: record.step,
+        status: 'completed',
+        output: { kind: 'final', content: record.content },
+      })
+      return
+    }
+
+    if (record.type === 'turn.completed') {
+      requireRunningTurn(turn)
+      turn.status = 'completed'
+      return
+    }
+
+    if (record.type === 'turn.failed') {
+      requireRunningTurn(turn)
+      turn.status = 'failed'
+      turn.error = record.error
+      return
+    }
+
+    const step = requireStep(turn, record.step)
+    if (step.output.kind !== 'tool-call' || step.output.call.id !== record.toolCallId) {
+      throw new Error(`Tool call ${record.toolCallId} does not match step ${record.step}`)
+    }
+    if (record.type === 'step.tool-completed') {
+      step.status = 'completed'
+      step.output.result = record.result
+    } else {
+      step.status = 'failed'
+      step.output.error = record.error
+    }
+  }
+}
+
+interface MutableSession {
+  id: string
+  projectId: string | null
+  status: 'active'
+  turns: MutableTurn[]
+}
+
+interface MutableTurn extends Omit<AgentTurn, 'steps'> {
+  steps: MutableStep[]
+  error?: string
+}
+
+type MutableStep = AgentStep
+
+function requireTurn(session: MutableSession, turnId: string): MutableTurn {
+  const turn = session.turns.find(candidate => candidate.id === turnId)
+  if (!turn) throw new Error(`Unknown turn: ${turnId}`)
+  return turn
+}
+
+function requireStep(turn: MutableTurn, stepNumber: number): MutableStep {
+  const step = turn.steps.find(candidate => candidate.stepNumber === stepNumber)
+  if (!step) throw new Error(`Unknown step: ${stepNumber}`)
+  return step
+}
+
+function requireRunningTurn(turn: MutableTurn): void {
+  if (turn.status !== 'running') throw new Error(`Turn ${turn.id} is ${turn.status}`)
+}

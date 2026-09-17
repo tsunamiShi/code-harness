@@ -42,4 +42,4 @@ Implicit queuing makes cancellation and user steering ambiguous. The first inter
 - One session is sequential even when multiple sessions run concurrently.
 - Failed turn details are not retained yet.
 - Long conversations will eventually exceed model context and require context management.
-- Process restart loses the session until durable storage is introduced.
+- Durable ownership and restart recovery are added by [ADR-002](002-mysql-persists-session-turns-and-steps.md).

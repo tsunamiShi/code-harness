@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { AgentSession, runAgent } from '../src/agent.ts'
+import { MemorySessionStore } from '../src/memory-session-store.ts'
 import type { Message, Model, ModelOutput, Tool } from '../src/types.ts'
 
 test('feeds a tool result back to the model before returning the final answer', async () => {
@@ -81,7 +82,11 @@ test('keeps completed turns in the next model request', async () => {
       return { kind: 'final', content }
     },
   }
-  const session = new AgentSession({ model, tools: [] })
+  const session = await AgentSession.create({
+    model,
+    tools: [],
+    store: new MemorySessionStore(),
+  })
 
   assert.equal(await session.send('第一轮问题'), '第一轮回答')
   assert.equal(await session.send('第二轮问题'), '第二轮回答')
@@ -108,10 +113,14 @@ test('rolls back a failed turn before accepting the next turn', async () => {
       return { kind: 'final', content: 'recovered' }
     },
   }
-  const session = new AgentSession({ model, tools: [] })
+  const store = new MemorySessionStore()
+  const session = await AgentSession.create({ model, tools: [], store })
 
   await assert.rejects(session.send('failed turn'), /provider unavailable/)
   assert.deepEqual(session.history(), [])
+  const failedSnapshot = await store.loadSession(session.id)
+  assert.equal(failedSnapshot?.turns[0]?.status, 'failed')
+  assert.equal(failedSnapshot?.turns[0]?.error, 'provider unavailable')
   assert.equal(await session.send('new turn'), 'recovered')
   assert.deepEqual(session.history(), [
     { role: 'user', content: 'new turn' },
@@ -129,11 +138,46 @@ test('rejects concurrent turns on the same session', async () => {
       return { kind: 'final', content: 'done' }
     },
   }
-  const session = new AgentSession({ model, tools: [] })
+  const session = await AgentSession.create({
+    model,
+    tools: [],
+    store: new MemorySessionStore(),
+  })
   const first = session.send('first')
   await started.promise
 
   await assert.rejects(session.send('second'), /already has a running turn/)
   release.resolve()
   assert.equal(await first, 'done')
+})
+
+test('restores completed turns from durable session state', async () => {
+  const store = new MemorySessionStore()
+  const firstModel: Model = {
+    async generate() {
+      return { kind: 'final', content: '记住了' }
+    },
+  }
+  const first = await AgentSession.create({ model: firstModel, tools: [], store })
+  await first.send('暗号是蓝鲸')
+
+  let restoredMessages: readonly Message[] = []
+  const resumedModel: Model = {
+    async generate(input) {
+      restoredMessages = structuredClone(input.messages)
+      return { kind: 'final', content: '蓝鲸' }
+    },
+  }
+  const resumed = await AgentSession.resume(first.id, {
+    model: resumedModel,
+    tools: [],
+    store,
+  })
+
+  assert.equal(await resumed.send('暗号是什么？'), '蓝鲸')
+  assert.deepEqual(restoredMessages, [
+    { role: 'user', content: '暗号是蓝鲸' },
+    { role: 'assistant', content: '记住了' },
+    { role: 'user', content: '暗号是什么？' },
+  ])
 })
