@@ -57,12 +57,20 @@ _Avoid_: Secondary Project、Dependency
 _Avoid_: Global Tool、Project Tool
 
 **Workspace Access Mode**:
-当前 CLI 进程对 Workspace Tool 的 Root 授权策略。`scoped` 只允许 Project Roots，`full` 允许任意本地绝对目录；不属于 Session 持久状态。
+当前 CLI 进程对 Workspace Tool 的 Root 授权策略。`scoped` 只允许 Project Roots，`full` 允许读取和修改任意本地绝对目录；不属于 Session 持久状态。
 _Avoid_: Project Permission、Session Permission
 
 **Read**:
 读取 Workspace Root 内一个 UTF-8 文本文件的有界行范围。
 _Avoid_: Fetch、Open
+
+**Edit**:
+在 Workspace Root 内的已有 UTF-8 文件中精确替换唯一一处文本。Edit 不创建文件，并以原子文件替换提交修改。
+_Avoid_: Write、Patch、Search and Replace All
+
+**Write**:
+在 Workspace Root 内创建一个此前不存在的 UTF-8 文件。Write 不覆盖已有路径。
+_Avoid_: Edit、Overwrite、Append
 
 **Glob**:
 按相对路径模式查找 Workspace Root 内的候选文件。
@@ -71,6 +79,14 @@ _Avoid_: List Files、Find Files
 **Grep**:
 按正则表达式搜索 Workspace Root 内的文件内容，并返回匹配文件和行号。
 _Avoid_: Search Text、Search
+
+**Bash**:
+在本机 Bash 进程中执行命令的 Code Tool，拥有与 Agent CLI 进程相同的系统权限，不受工作目录限制。
+_Avoid_: Terminal、Sandbox、Shell Script
+
+**LSP**:
+通过 Language Server Protocol 查询源码定义、引用和类型信息的只读 Code Tool。
+_Avoid_: Grep、Type Checker、Compiler
 
 ### Conversation lifecycle
 

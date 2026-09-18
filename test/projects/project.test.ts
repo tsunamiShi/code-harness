@@ -76,6 +76,7 @@ test('full-access instructions allow arbitrary roots without changing the Projec
   const instructions = projectInstructions(project, 'full')
 
   assert.match(instructions, /Filesystem access mode: full/)
+  assert.match(instructions, /including Edit and Write/)
   assert.match(instructions, /any absolute local directory as root/)
   assert.doesNotMatch(instructions, /Do not access paths outside/)
 })

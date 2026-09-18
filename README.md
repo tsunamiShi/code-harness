@@ -1,6 +1,6 @@
 # AI Agent
 
-这是一个从最小 Agent Loop 演进为可部署 Code Agent 的 TypeScript 项目。当前版本支持真实模型、工具调用、多轮对话、Multi-root Project、受 Project Root 约束的代码探索，以及 MySQL 持久化和恢复。
+这是一个从最小 Agent Loop 演进为可部署 Code Agent 的 TypeScript 项目。当前版本支持真实模型、工具调用、多轮对话、Multi-root Project、受 Project Root 约束的代码探索和精确文件修改，以及 MySQL 持久化和恢复。
 
 ## 当前运行模型
 
@@ -33,13 +33,24 @@ src/
 
 ## Workspace Tools
 
-CLI 向模型暴露三个只读代码探索工具：
+CLI 在 Scoped 模式暴露六个代码工具：
 
 - `Glob`：按相对路径模式定位候选文件。
 - `Grep`：使用正则表达式定位匹配行。
 - `Read`：读取一个 UTF-8 文本文件的指定行范围。
+- `Edit`：在已有 UTF-8 文件中精确替换唯一一处文本。
+- `Write`：创建一个此前不存在的 UTF-8 文件。
+- `LSP`：查询 TypeScript/JavaScript 的源码定义、引用和 Hover 类型信息。
 
-三个工具默认使用 Project 的 Primary Root；`root` 参数可以选择一个 Attached Root。所有路径都必须相对于所选 Root，运行时会检查规范路径和符号链接的真实目标。结果包含固定上限和截断标记，Tool Error 会写入 Step 并返回模型修正，而不是直接结束 Turn。
+前五个 Workspace Tools 默认使用 Project 的 Primary Root；`root` 参数可以选择一个 Attached Root。所有路径都必须相对于所选 Root，运行时会检查规范路径和符号链接的真实目标。结果包含固定上限和截断标记，Tool Error 会写入 Step 并返回模型修正，而不是直接结束 Turn。
+
+`Edit` 要求 `oldText` 在不超过 2 MB 的目标文件中恰好出现一次，单个 `oldText` 或 `newText` 最多 64,000 字符。它先写入同目录临时文件、复查原文件未变化，再原子替换目标并返回修改行范围和修改前后的 SHA-256。`Edit` 不支持创建文件。
+
+`Write` 接收最多 64,000 字符的完整内容，只创建新文件，不覆盖任何已有文件或符号链接，也不自动创建父目录。它先完成同目录临时文件，再以排他方式发布目标，并返回字符数、字节数和 SHA-256，而不重复返回完整内容。
+
+`LSP` 通过标准 JSON-RPC 启动真实的 `typescript-language-server`，当前支持 `definition / references / hover`。模型使用从 1 开始的行列号，Runtime 将协议结果归一化为 Root 相对路径，并过滤所选 Root 之外的位置。每次调用启动独立 Server 进程，避免跨 Session 生命周期泄漏；后续出现明显启动成本时再演进为可回收的持久 Language Server。
+
+Full Access 模式额外暴露 `Bash`。它以选定 Root 或其相对子目录为 `cwd`，返回退出码、信号、stdout、stderr、超时和截断信息；非零退出属于可供模型修正的执行结果。当前默认超时 30 秒、最大 120 秒，stdout/stderr 各最多返回 64,000 字符。
 
 模型可以在同一个 Step 返回多个 Tool Calls。`Read / Glob / Grep` 声明为 parallel-safe，因此同批调用会并行执行并按模型给出的顺序写回结果。默认每个 Turn 最多执行 50 个模型 Step，可在 `.env` 使用 `AGENT_MAX_STEPS` 配置为 1 到 500；最后一个可用 Step 不再提供 Tools，保留给模型生成最终答案。
 
@@ -100,7 +111,9 @@ pnpm chat -- --project <project-id> --full-access
 pnpm chat -- --session <session-id> --full-access
 ```
 
-`--full-access` 允许 `Read / Glob / Grep` 选择任意存在的绝对目录作为 `root`，但工具仍然只读，并继续执行结果上限、超时和二进制检查。该授权不写入数据库，下次启动必须重新声明；操作系统权限和 macOS 隐私控制仍可能拒绝访问。
+`--full-access` 允许全部 Workspace Tools 选择任意存在的绝对目录作为 `root`，包括通过 `Edit / Write` 修改或创建文件。工具仍然执行相对路径、符号链接、文件类型、结果上限、超时和内容大小检查。该授权不写入数据库，下次启动必须重新声明；操作系统权限和 macOS 隐私控制仍可能拒绝访问。
+
+Full Access 还会启用 `Bash`。`cwd` 不是安全边界：Shell 命令可以使用绝对路径或自行切换目录，因此在没有 OS sandbox 的阶段，Scoped 模式不会向模型提供 Bash。
 
 CLI 会显示 Primary Root 和新 Session ID。正常退出后可以恢复：
 
@@ -133,11 +146,18 @@ Reasoning Content 只来自供应商响应的 `reasoning_content` 字段。并�
 - [ADR-007: Steps can contain parallel Tool Calls](docs/decisions/007-steps-can-contain-parallel-tool-calls.md)
 - [ADR-008: Runtime events drive execution traces](docs/decisions/008-runtime-events-drive-execution-traces.md)
 - [ADR-009: Source layout follows runtime roles](docs/decisions/009-source-layout-follows-runtime-roles.md)
+- [ADR-010: Edit performs scoped exact replacements](docs/decisions/010-edit-performs-scoped-exact-replacements.md)
+- [ADR-011: Write creates new Project files without overwriting](docs/decisions/011-write-creates-new-project-files.md)
+- [ADR-012: Full access authorizes all Workspace Tools](docs/decisions/012-full-access-authorizes-all-workspace-tools.md)
+- [ADR-013: Unsandboxed Bash requires full access](docs/decisions/013-unsandboxed-bash-requires-full-access.md)
 
 ## 当前限制
 
 - 单个 Session 同时只允许一个运行中的 Turn。
-- 当前只有只读的 `Read / Glob / Grep`；尚未加入文件修改、Shell 和 LSP。
+- 当前 `Edit / Write` 只支持修改或创建文本文件；尚未加入文件删除。
+- Edit / Write 当前没有交互式 Approval；Full Access 会显式扩大其写入范围。
+- Bash 尚无 OS sandbox、Approval、交互式 stdin 和持久终端；只能在 Full Access 下执行一次性命令。
+- LSP 当前只支持 TypeScript/JavaScript，且每次查询都会启动新的 Language Server 进程。
 - Project 支持追加 Attached Root，但尚未支持移除 Root、更换 Primary Root 和运行时热更新。
 - 异常退出可能留下 `running` Turn；尚未实现租约和自动恢复。
 - 工具副作用与结果入库不是一个原子事务；自动重试前需要幂等键或 outbox。

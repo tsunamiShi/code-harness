@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded in part by ADR-012
 
 ## Date
 
@@ -49,3 +49,5 @@ This would create different path semantics between modes. Keeping `root + relati
 - The model can select an unregistered absolute directory without modifying the Project.
 - A Session's persisted Messages do not imply that a future process has the same authority.
 - Full access currently applies only to the read-only Workspace Tools; future mutation and Shell Tools need their own permission and approval design.
+
+ADR-012 supersedes the read-only scope of this decision. Full access now authorizes all Workspace Tools, including Edit and Write.

@@ -97,7 +97,7 @@ export function projectInstructions(
   if (accessMode === 'full') {
     instructions.push(
       'Filesystem access mode: full.',
-      'Read, Glob, and Grep may select any absolute local directory as root; path remains relative to that root.',
+      'All Workspace Tools, including Edit and Write, may select any absolute local directory as root; paths remain relative to that root.',
     )
   } else {
     instructions.push('Do not access paths outside the listed workspace roots.')

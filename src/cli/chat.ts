@@ -5,7 +5,7 @@ import { OpenAICompatibleChatModel } from '../models/openai-compatible-chat-mode
 import { primaryRoot, ProjectCatalog } from '../projects/project.ts'
 import { AgentSession } from '../runtime/agent-session.ts'
 import { MysqlAgentStore } from '../storage/mysql-agent-store.ts'
-import { createWorkspaceTools } from '../tools/workspace-tools.ts'
+import { createCodeTools } from '../tools/code-tools.ts'
 import { readChatTarget } from './chat-arguments.ts'
 import { createConsoleTrace } from './console-trace.ts'
 import {
@@ -26,7 +26,7 @@ const sessionOptions = {
     baseURL: requiredEnvironment('DASHSCOPE_BASE_URL'),
     model: requiredEnvironment('DASHSCOPE_MODEL'),
   }),
-  tools: createWorkspaceTools(project, target.accessMode),
+  tools: createCodeTools(project, target.accessMode),
   store,
   project,
   accessMode: target.accessMode,
