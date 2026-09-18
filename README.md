@@ -17,6 +17,20 @@ Project
 
 数据库保留完成和失败的 Turn/Step。发送给模型的 `messages` 只从已完成 Turn 投影，失败记录不会污染后续上下文。
 
+## Source layout
+
+```text
+src/
+├─ runtime/   AgentSession、Agent Loop、Model/Tool/Message 类型和 SessionStore 接口
+├─ models/    模型协议 Adapter
+├─ tools/     Runtime 可执行的 Tool 实现
+├─ projects/  Project、Workspace Root 和 ProjectCatalog
+├─ storage/   内存与 MySQL 持久化 Adapter
+└─ cli/       命令入口、参数解析、环境配置和终端输出
+```
+
+`models/openai-compatible-chat-model.ts` 按协议而不是模型品牌命名。它通过 OpenAI-compatible Chat Completions 协议连接当前 `.env` 配置的模型，因此可以使用百炼提供的 Qwen、GLM 或其他兼容模型，而不需要为每个模型复制一个 Adapter。
+
 ## Workspace Tools
 
 CLI 向模型暴露三个只读代码探索工具：
@@ -118,6 +132,7 @@ Reasoning Content 只来自供应商响应的 `reasoning_content` 字段。并�
 - [ADR-006: Full filesystem access is an explicit process mode](docs/decisions/006-full-access-is-an-explicit-process-mode.md)
 - [ADR-007: Steps can contain parallel Tool Calls](docs/decisions/007-steps-can-contain-parallel-tool-calls.md)
 - [ADR-008: Runtime events drive execution traces](docs/decisions/008-runtime-events-drive-execution-traces.md)
+- [ADR-009: Source layout follows runtime roles](docs/decisions/009-source-layout-follows-runtime-roles.md)
 
 ## 当前限制
 

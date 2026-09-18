@@ -4,9 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import type { AgentProject } from '../src/project.ts'
-import type { Tool } from '../src/types.ts'
-import { createWorkspaceTools } from '../src/workspace-tools.ts'
+import type { AgentProject } from '../../src/projects/project.ts'
+import type { Tool } from '../../src/runtime/types.ts'
+import { createWorkspaceTools } from '../../src/tools/workspace-tools.ts'
 
 test('exposes only Read, Glob, and Grep for one Project', async t => {
   const fixture = await createFixture(t)

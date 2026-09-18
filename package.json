@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "chat": "tsx --env-file=.env src/chat.ts",
-    "project": "tsx --env-file=.env src/project-cli.ts",
+    "chat": "tsx --env-file=.env src/cli/chat.ts",
+    "project": "tsx --env-file=.env src/cli/project.ts",
     "test": "tsx --test test/**/*.test.ts",
     "test:mysql": "tsx --test test-integration/**/*.test.ts",
     "typecheck": "tsc --noEmit"

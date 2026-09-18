@@ -1,4 +1,4 @@
-import type { WorkspaceAccessMode } from './project.ts'
+import type { WorkspaceAccessMode } from '../projects/project.ts'
 
 export type ChatTarget = {
   kind: 'project' | 'session'

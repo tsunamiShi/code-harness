@@ -4,20 +4,25 @@ import type {
   ChatCompletionTool,
 } from "openai/resources/chat/completions";
 
-import type { Message, Model, ModelOutput, ToolDescription } from "./types.ts";
+import type {
+  Message,
+  Model,
+  ModelOutput,
+  ToolDescription,
+} from "../runtime/types.ts";
 
-export interface QwenModelOptions {
+export interface OpenAICompatibleChatModelOptions {
   apiKey: string;
   baseURL: string;
   model: string;
   timeoutMs?: number;
 }
 
-/** Alibaba Model Studio adapter for the Agent runtime's Model interface. */
-export class QwenModel implements Model {
+/** OpenAI-compatible Chat Completions adapter for the Runtime's Model interface. */
+export class OpenAICompatibleChatModel implements Model {
   private readonly client: OpenAI;
 
-  constructor(private readonly options: QwenModelOptions) {
+  constructor(private readonly options: OpenAICompatibleChatModelOptions) {
     this.client = new OpenAI({
       apiKey: options.apiKey,
       baseURL: options.baseURL,
@@ -41,7 +46,7 @@ export class QwenModel implements Model {
           }),
     });
     const message = completion.choices[0]?.message;
-    if (!message) throw new Error("Qwen returned no completion choice");
+    if (!message) throw new Error("Model provider returned no completion choice");
 
     const calls = message.tool_calls ?? [];
     const reasoningContent = readReasoningContent(message);
@@ -51,7 +56,7 @@ export class QwenModel implements Model {
         kind: "tool-calls",
         calls: calls.map(call => {
           if (call.type !== "function") {
-            throw new Error(`Unsupported Qwen tool call type: ${call.type}`);
+            throw new Error(`Unsupported model tool call type: ${call.type}`);
           }
           return {
             id: call.id,
@@ -65,7 +70,7 @@ export class QwenModel implements Model {
     }
 
     if (!message.content)
-      throw new Error("Qwen returned neither a tool call nor text");
+      throw new Error("Model provider returned neither a tool call nor text");
     return {
       kind: "final",
       content: message.content,
@@ -121,7 +126,7 @@ function parseArguments(arguments_: string): unknown {
   try {
     return JSON.parse(arguments_);
   } catch (error: unknown) {
-    throw new Error(`Qwen returned invalid tool arguments: ${arguments_}`, {
+    throw new Error(`Model provider returned invalid tool arguments: ${arguments_}`, {
       cause: error,
     });
   }

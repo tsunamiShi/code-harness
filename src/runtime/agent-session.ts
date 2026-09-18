@@ -1,12 +1,11 @@
 import { randomUUID } from 'node:crypto'
 
-import { MemorySessionStore } from './memory-session-store.ts'
+import { projectInstructions, type AgentProject, type WorkspaceAccessMode } from '../projects/project.ts'
+import { MemorySessionStore } from '../storage/memory-session-store.ts'
 import {
-  projectInstructions,
-  type AgentProject,
-  type WorkspaceAccessMode,
-} from './project.ts'
-import { projectMessages, type SessionStore } from './session-store.ts'
+  projectMessages,
+  type SessionStore,
+} from './session-store.ts'
 import type { Message, Model, ModelOutput, Tool, ToolCall } from './types.ts'
 
 const DEFAULT_MAX_STEPS = 50

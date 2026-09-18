@@ -16,8 +16,8 @@ import type {
   SessionStore,
   StepStatus,
   TurnStatus,
-} from './session-store.ts'
-import type { AgentProject, ProjectRoot, ProjectStore } from './project.ts'
+} from '../runtime/session-store.ts'
+import type { AgentProject, ProjectRoot, ProjectStore } from '../projects/project.ts'
 
 export interface MysqlAgentStoreOptions {
   host: string

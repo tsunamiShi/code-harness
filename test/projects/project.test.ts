@@ -10,7 +10,7 @@ import {
   type ProjectRoot,
   type ProjectStore,
   projectInstructions,
-} from '../src/project.ts'
+} from '../../src/projects/project.ts'
 
 test('creates a project with one primary root and deduplicated attached roots', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'ai-agent-project-'))

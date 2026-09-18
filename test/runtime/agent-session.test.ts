@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { AgentSession, runAgent, type AgentEvent } from '../src/agent.ts'
-import { MemorySessionStore } from '../src/memory-session-store.ts'
-import type { Message, Model, ModelOutput, Tool } from '../src/types.ts'
+import { AgentSession, runAgent, type AgentEvent } from '../../src/runtime/agent-session.ts'
+import { MemorySessionStore } from '../../src/storage/memory-session-store.ts'
+import type { Message, Model, ModelOutput, Tool } from '../../src/runtime/types.ts'
 
 test('feeds a tool result back to the model before returning the final answer', async () => {
   const recordedRequests: Message[][] = []

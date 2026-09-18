@@ -1,7 +1,7 @@
 import { mysqlOptionsFromEnvironment } from './config.ts'
-import { MysqlAgentStore } from './mysql-agent-store.ts'
-import { readProjectCommand } from './project-cli-arguments.ts'
-import { primaryRoot, ProjectCatalog } from './project.ts'
+import { primaryRoot, ProjectCatalog } from '../projects/project.ts'
+import { MysqlAgentStore } from '../storage/mysql-agent-store.ts'
+import { readProjectCommand } from './project-arguments.ts'
 
 const store = await MysqlAgentStore.connect(mysqlOptionsFromEnvironment())
 const catalog = new ProjectCatalog(store)

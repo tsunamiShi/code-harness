@@ -1,4 +1,4 @@
-import type { MysqlAgentStoreOptions } from './mysql-agent-store.ts'
+import type { MysqlAgentStoreOptions } from '../storage/mysql-agent-store.ts'
 
 const DEFAULT_AGENT_MAX_STEPS = 50
 

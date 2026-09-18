@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { readChatTarget } from '../src/cli-arguments.ts'
+import { readChatTarget } from '../../src/cli/chat-arguments.ts'
 
 test('accepts the pnpm argument separator passed through to the chat script', () => {
   assert.deepEqual(readChatTarget(['--', '--project', 'project-1']), {

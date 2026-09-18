@@ -11,8 +11,8 @@ import {
   type AgentProject,
   type ProjectRoot,
   type WorkspaceAccessMode,
-} from './project.ts'
-import type { Tool } from './types.ts'
+} from '../projects/project.ts'
+import type { Tool } from '../runtime/types.ts'
 
 const DEFAULT_READ_LINES = 200
 const MAX_READ_LINES = 1_000

@@ -1,18 +1,18 @@
 import { stdin, stdout } from 'node:process'
 import { createInterface } from 'node:readline/promises'
 
-import { AgentSession } from './agent.ts'
-import { readChatTarget } from './cli-arguments.ts'
+import { OpenAICompatibleChatModel } from '../models/openai-compatible-chat-model.ts'
+import { primaryRoot, ProjectCatalog } from '../projects/project.ts'
+import { AgentSession } from '../runtime/agent-session.ts'
+import { MysqlAgentStore } from '../storage/mysql-agent-store.ts'
+import { createWorkspaceTools } from '../tools/workspace-tools.ts'
+import { readChatTarget } from './chat-arguments.ts'
 import { createConsoleTrace } from './console-trace.ts'
 import {
   agentMaxStepsFromEnvironment,
   mysqlOptionsFromEnvironment,
   requiredEnvironment,
 } from './config.ts'
-import { MysqlAgentStore } from './mysql-agent-store.ts'
-import { primaryRoot, ProjectCatalog } from './project.ts'
-import { QwenModel } from './qwen-model.ts'
-import { createWorkspaceTools } from './workspace-tools.ts'
 
 const store = await MysqlAgentStore.connect(mysqlOptionsFromEnvironment())
 const catalog = new ProjectCatalog(store)
@@ -21,7 +21,7 @@ const project = target.kind === 'project'
   ? await catalog.get(target.id)
   : await projectForSession(target.id)
 const sessionOptions = {
-  model: new QwenModel({
+  model: new OpenAICompatibleChatModel({
     apiKey: requiredEnvironment('DASHSCOPE_API_KEY'),
     baseURL: requiredEnvironment('DASHSCOPE_BASE_URL'),
     model: requiredEnvironment('DASHSCOPE_MODEL'),

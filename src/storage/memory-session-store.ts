@@ -7,7 +7,7 @@ import type {
   AgentTurn,
   SessionRecord,
   SessionStore,
-} from './session-store.ts'
+} from '../runtime/session-store.ts'
 
 /** In-memory SessionStore adapter for isolated tests and disposable runs. */
 export class MemorySessionStore implements SessionStore {

@@ -1,4 +1,4 @@
-import type { AgentEvent } from './agent.ts'
+import type { AgentEvent } from '../runtime/agent-session.ts'
 
 const DEFAULT_MAX_TOOL_RESULT_CHARS = 4_000
 

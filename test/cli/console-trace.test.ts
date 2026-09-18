@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import type { AgentEvent } from '../src/agent.ts'
-import { createConsoleTrace } from '../src/console-trace.ts'
+import { createConsoleTrace } from '../../src/cli/console-trace.ts'
+import type { AgentEvent } from '../../src/runtime/agent-session.ts'
 
 test('renders model reasoning, tool arguments, result content, and turn summary', () => {
   const output: string[] = []

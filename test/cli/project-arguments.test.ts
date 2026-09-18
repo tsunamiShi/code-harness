@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { readProjectCommand } from '../src/project-cli-arguments.ts'
+import { readProjectCommand } from '../../src/cli/project-arguments.ts'
 
 test('parses an Attached Root command', () => {
   assert.deepEqual(

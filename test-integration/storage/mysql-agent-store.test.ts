@@ -7,10 +7,13 @@ import test from 'node:test'
 
 import mysql from 'mysql2/promise'
 
-import { AgentSession } from '../src/agent.ts'
-import { MysqlAgentStore, type MysqlAgentStoreOptions } from '../src/mysql-agent-store.ts'
-import { ProjectCatalog, projectInstructions } from '../src/project.ts'
-import type { Message, Model, Tool } from '../src/types.ts'
+import { ProjectCatalog, projectInstructions } from '../../src/projects/project.ts'
+import { AgentSession } from '../../src/runtime/agent-session.ts'
+import type { Message, Model, Tool } from '../../src/runtime/types.ts'
+import {
+  MysqlAgentStore,
+  type MysqlAgentStoreOptions,
+} from '../../src/storage/mysql-agent-store.ts'
 
 test('persists and restores a tool-using conversation in MySQL', async () => {
   const database = `ai_agent_test_${randomUUID().replaceAll('-', '')}`
