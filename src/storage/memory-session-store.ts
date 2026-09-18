@@ -43,6 +43,15 @@ export class MemorySessionStore implements SessionStore {
     }
 
     const turn = requireTurn(session, record.turnId)
+    if (
+      record.type === 'model.invocation-started'
+      || record.type === 'model.attempt'
+      || record.type === 'model.invocation-completed'
+      || record.type === 'model.invocation-failed'
+    ) {
+      requireRunningTurn(turn)
+      return
+    }
     if (record.type === 'step.tools-called') {
       requireRunningTurn(turn)
       if (record.calls.length === 0) throw new Error('A tool Step must contain at least one call')

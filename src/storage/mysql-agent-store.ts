@@ -313,7 +313,7 @@ async function migrate(pool: Pool): Promise<void> {
     'SELECT MAX(version) AS version FROM agent_schema_migrations',
   )
   const version = rows[0]?.version ?? 0
-  if (version > 3) throw new Error(`Database schema version ${version} is newer than supported version 3`)
+  if (version > 4) throw new Error(`Database schema version ${version} is newer than supported version 4`)
 
   if (version < 1) {
     await pool.execute(`
@@ -444,6 +444,68 @@ async function migrate(pool: Pool): Promise<void> {
     `)
     await pool.execute('INSERT IGNORE INTO agent_schema_migrations (version) VALUES (3)')
   }
+
+  if (version < 4) {
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS agent_model_invocations (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        turn_id VARCHAR(36) NOT NULL,
+        step_number INT UNSIGNED NOT NULL,
+        status VARCHAR(16) NOT NULL,
+        provider_name VARCHAR(255) NULL,
+        model_name VARCHAR(255) NULL,
+        protocol_name VARCHAR(64) NULL,
+        request_timeout_ms INT UNSIGNED NULL,
+        max_retries INT UNSIGNED NULL,
+        message_count INT UNSIGNED NOT NULL,
+        tool_count INT UNSIGNED NOT NULL,
+        input_chars BIGINT UNSIGNED NOT NULL,
+        output_kind VARCHAR(16) NULL,
+        output_chars BIGINT UNSIGNED NULL,
+        reasoning_chars BIGINT UNSIGNED NULL,
+        tool_call_count INT UNSIGNED NULL,
+        finish_reason VARCHAR(64) NULL,
+        provider_request_id VARCHAR(255) NULL,
+        input_tokens BIGINT UNSIGNED NULL,
+        output_tokens BIGINT UNSIGNED NULL,
+        total_tokens BIGINT UNSIGNED NULL,
+        cached_input_tokens BIGINT UNSIGNED NULL,
+        reasoning_tokens BIGINT UNSIGNED NULL,
+        error_name VARCHAR(255) NULL,
+        error_message TEXT NULL,
+        started_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+        completed_at DATETIME(6) NULL,
+        UNIQUE KEY uq_agent_model_invocations_turn_step (turn_id, step_number),
+        KEY idx_agent_model_invocations_turn_status (turn_id, status),
+        CONSTRAINT fk_agent_model_invocations_turn FOREIGN KEY (turn_id)
+          REFERENCES agent_turns (id) ON DELETE CASCADE,
+        CONSTRAINT chk_agent_model_invocations_status
+          CHECK (status IN ('running', 'completed', 'failed')),
+        CONSTRAINT chk_agent_model_invocations_kind
+          CHECK (output_kind IS NULL OR output_kind IN ('final', 'tool-calls'))
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+    `)
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS agent_model_attempts (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        invocation_id BIGINT UNSIGNED NOT NULL,
+        attempt_number INT UNSIGNED NOT NULL,
+        status VARCHAR(16) NOT NULL,
+        http_status SMALLINT UNSIGNED NULL,
+        provider_request_id VARCHAR(255) NULL,
+        error_name VARCHAR(255) NULL,
+        error_message TEXT NULL,
+        started_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+        completed_at DATETIME(6) NULL,
+        UNIQUE KEY uq_agent_model_attempts_invocation_number (invocation_id, attempt_number),
+        CONSTRAINT fk_agent_model_attempts_invocation FOREIGN KEY (invocation_id)
+          REFERENCES agent_model_invocations (id) ON DELETE CASCADE,
+        CONSTRAINT chk_agent_model_attempts_status
+          CHECK (status IN ('running', 'completed', 'failed'))
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+    `)
+    await pool.execute('INSERT IGNORE INTO agent_schema_migrations (version) VALUES (4)')
+  }
 }
 
 async function lockSession(connection: PoolConnection, sessionId: string): Promise<void> {
@@ -480,6 +542,101 @@ async function applyRecord(
          VALUES (?, ?, ?, 'running', ?)`,
         [record.turnId, sessionId, nextNumber, record.prompt],
       )
+      return
+    }
+    case 'model.invocation-started': {
+      await requireRunningTurn(connection, sessionId, record.turnId)
+      await connection.execute(
+        `INSERT INTO agent_model_invocations
+           (turn_id, step_number, status, provider_name, model_name, protocol_name,
+            request_timeout_ms, max_retries, message_count, tool_count, input_chars)
+         VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          record.turnId,
+          record.step,
+          record.descriptor?.provider ?? null,
+          record.descriptor?.model ?? null,
+          record.descriptor?.protocol ?? null,
+          record.descriptor?.requestTimeoutMs ?? null,
+          record.descriptor?.maxRetries ?? null,
+          record.messageCount,
+          record.toolCount,
+          record.inputChars,
+        ],
+      )
+      return
+    }
+    case 'model.attempt': {
+      const invocationId = await requireRunningModelInvocation(
+        connection,
+        record.turnId,
+        record.step,
+      )
+      if (record.event.type === 'started') {
+        await connection.execute(
+          `INSERT INTO agent_model_attempts
+             (invocation_id, attempt_number, status)
+           VALUES (?, ?, 'running')`,
+          [invocationId, record.event.attempt],
+        )
+        return
+      }
+      const status = record.event.type === 'completed' ? 'completed' : 'failed'
+      const [result] = await connection.execute<ResultSetHeader>(
+        `UPDATE agent_model_attempts
+         SET status = ?, http_status = ?, provider_request_id = ?,
+             error_name = ?, error_message = ?, completed_at = CURRENT_TIMESTAMP(6)
+         WHERE invocation_id = ? AND attempt_number = ? AND status = 'running'`,
+        [
+          status,
+          record.event.httpStatus ?? null,
+          record.event.providerRequestId ?? null,
+          record.event.type === 'failed' ? record.event.errorName : null,
+          record.event.type === 'failed' ? record.event.errorMessage : null,
+          invocationId,
+          record.event.attempt,
+        ],
+      )
+      requireChanged(result, `Cannot ${status} model attempt ${record.event.attempt}`)
+      return
+    }
+    case 'model.invocation-completed': {
+      const usage = record.metadata?.usage
+      const [result] = await connection.execute<ResultSetHeader>(
+        `UPDATE agent_model_invocations
+         SET status = 'completed', output_kind = ?, output_chars = ?, reasoning_chars = ?,
+             tool_call_count = ?, finish_reason = ?, provider_request_id = ?,
+             input_tokens = ?, output_tokens = ?, total_tokens = ?,
+             cached_input_tokens = ?, reasoning_tokens = ?, completed_at = CURRENT_TIMESTAMP(6)
+         WHERE turn_id = ? AND step_number = ? AND status = 'running'`,
+        [
+          record.outputKind,
+          record.outputChars,
+          record.reasoningChars,
+          record.toolCallCount,
+          record.metadata?.finishReason ?? null,
+          record.metadata?.providerRequestId ?? null,
+          usage?.inputTokens ?? null,
+          usage?.outputTokens ?? null,
+          usage?.totalTokens ?? null,
+          usage?.cachedInputTokens ?? null,
+          usage?.reasoningTokens ?? null,
+          record.turnId,
+          record.step,
+        ],
+      )
+      requireChanged(result, `Cannot complete model invocation for step ${record.step}`)
+      return
+    }
+    case 'model.invocation-failed': {
+      const [result] = await connection.execute<ResultSetHeader>(
+        `UPDATE agent_model_invocations
+         SET status = 'failed', error_name = ?, error_message = ?,
+             completed_at = CURRENT_TIMESTAMP(6)
+         WHERE turn_id = ? AND step_number = ? AND status = 'running'`,
+        [record.errorName, record.error, record.turnId, record.step],
+      )
+      requireChanged(result, `Cannot fail model invocation for step ${record.step}`)
       return
     }
     case 'step.tools-called': {
@@ -554,6 +711,21 @@ async function requireRunningTurn(
     [turnId, sessionId],
   )
   if (rows.length === 0) throw new Error(`Turn ${turnId} is not running in session ${sessionId}`)
+}
+
+async function requireRunningModelInvocation(
+  connection: PoolConnection,
+  turnId: string,
+  step: number,
+): Promise<number> {
+  const [rows] = await connection.execute<(RowDataPacket & { id: number })[]>(
+    `SELECT id FROM agent_model_invocations
+     WHERE turn_id = ? AND step_number = ? AND status = 'running'`,
+    [turnId, step],
+  )
+  const id = rows[0]?.id
+  if (id === undefined) throw new Error(`Model invocation for step ${step} is not running`)
+  return id
 }
 
 async function updateToolStep(

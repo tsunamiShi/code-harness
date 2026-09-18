@@ -15,7 +15,7 @@ Project
 
 `ProjectCatalog` 管理本地目录选择，`AgentSession` 控制 Agent Loop，`Model` 适配模型供应商，`Tool` 暴露外部能力，存储接口隔离持久化实现。正式 CLI 使用 `MysqlAgentStore`；一次性调用和单元测试可使用内存 Adapter。
 
-数据库保留完成和失败的 Turn/Step。发送给模型的 `messages` 只从已完成 Turn 投影，失败记录不会污染后续上下文。
+数据库保留完成和失败的 Turn/Step，并单独记录每次 Model Invocation 及其 Provider Attempts。发送给模型的 `messages` 只从已完成 Turn 投影，失败记录和观测数据不会污染后续上下文。
 
 ## Source layout
 
@@ -123,9 +123,9 @@ CLI 会显示 Primary Root 和新 Session ID。正常退出后可以恢复：
 pnpm chat -- --session <session-id>
 ```
 
-每个 Turn 会打印结构化 Execution Trace：Step 编号、模型请求中的 Message/Tool 数量、模型耗时、供应商返回的 Reasoning Content、Tool Call 参数、串行或并行调度方式、Tool Result、最终 Content 和 Turn 总耗时。Tool Result 在终端最多显示 4,000 字符，完整结果仍会写入数据库并反馈给模型。
+每个 Turn 会打印结构化 Execution Trace：Step 编号、模型请求中的 Message/Tool 数量、模型耗时、供应商返回的 Reasoning Content、Tool Call 参数、串行或并行调度方式、Tool Result、最终 Content 和 Turn 总耗时。Tool Result 在终端最多显示 4,000 字符，完整结果仍会写入数据库并反馈给模型。MySQL 还会持久化 Model Invocation 的输入规模、Token Usage、结束原因和错误，以及每次实际 Provider Attempt 的 HTTP 状态、Request ID、错误与时间。
 
-Reasoning Content 只来自供应商响应的 `reasoning_content` 字段。并非所有模型或每个响应都会返回该字段；未返回时 CLI 会明确显示 `Provider reasoning: not returned`，不会把 Runtime 自己生成的说明伪装成模型思考。当前 Execution Trace 是实时观察输出，Reasoning Content 和耗时尚未持久化。
+Reasoning Content 只来自供应商响应的 `reasoning_content` 字段。并非所有模型或每个响应都会返回该字段；未返回时 CLI 会明确显示 `Provider reasoning: not returned`，不会把 Runtime 自己生成的说明伪装成模型思考。Reasoning Content 原文仍只存在于实时 Trace；数据库仅保留其字符数和供应商报告的 reasoning token 数。
 
 ## 数据表
 
@@ -133,8 +133,10 @@ Reasoning Content 只来自供应商响应的 `reasoning_content` 字段。并�
 - `agent_project_roots`：Primary Root 和 Attached Roots。
 - `agent_sessions`：Session 身份与生命周期。
 - `agent_turns`：用户输入、顺序、完成/失败状态和错误。
-- `agent_steps`：每次模型推理及其最终输出或 Tool Call Batch。
+- `agent_steps`：每次成功模型决策及其最终输出或 Tool Call Batch。
 - `agent_tool_calls`：Step 内每个 Tool Call 的参数、状态、结果和错误。
+- `agent_model_invocations`：每个 Step 对应的逻辑模型调用，包括失败后未产生 Step 的调用。
+- `agent_model_attempts`：一次 Model Invocation 下每个实际供应商请求及 SDK 重试。
 - `agent_schema_migrations`：已应用的数据库结构版本。
 
 ## Architecture decisions
@@ -147,6 +149,7 @@ Reasoning Content 只来自供应商响应的 `reasoning_content` 字段。并�
 - [ADR-006: Full filesystem access is an explicit process mode](docs/decisions/006-full-access-is-an-explicit-process-mode.md)
 - [ADR-007: Steps can contain parallel Tool Calls](docs/decisions/007-steps-can-contain-parallel-tool-calls.md)
 - [ADR-008: Runtime events drive execution traces](docs/decisions/008-runtime-events-drive-execution-traces.md)
+- [ADR-015: Model Invocations and Provider Attempts are durable](docs/decisions/015-model-invocations-and-provider-attempts-are-durable.md)
 - [ADR-009: Source layout follows runtime roles](docs/decisions/009-source-layout-follows-runtime-roles.md)
 - [ADR-010: Edit performs scoped exact replacements](docs/decisions/010-edit-performs-scoped-exact-replacements.md)
 - [ADR-011: Write creates new Project files without overwriting](docs/decisions/011-write-creates-new-project-files.md)
@@ -165,4 +168,4 @@ Reasoning Content 只来自供应商响应的 `reasoning_content` 字段。并�
 - 异常退出可能留下 `running` Turn；尚未实现租约和自动恢复。
 - 工具副作用与结果入库不是一个原子事务；自动重试前需要幂等键或 outbox。
 - 长对话尚未加入上下文窗口预算、摘要和裁剪策略。
-- Execution Trace 尚未支持 JSON 日志、Trace ID 导出和持久化查询。
+- Execution Trace 尚未支持 JSON 日志、Trace ID 导出和持久化查询接口；模型调用遥测已经持久化到 MySQL。

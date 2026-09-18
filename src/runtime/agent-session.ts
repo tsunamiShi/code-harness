@@ -140,10 +140,51 @@ export class AgentSession {
           messageCount: messages.length,
           toolCount: tools.length,
         })
+        await this.options.store.record(this.id, {
+          type: 'model.invocation-started',
+          turnId,
+          step,
+          ...(this.options.model.descriptor === undefined
+            ? {}
+            : { descriptor: this.options.model.descriptor }),
+          messageCount: messages.length,
+          toolCount: tools.length,
+          inputChars: JSON.stringify({ messages, tools }).length,
+        })
         const modelStartedAt = performance.now()
-        const output = await this.options.model.generate({
-          messages,
-          tools,
+        let output: ModelOutput
+        try {
+          output = await this.options.model.generate({
+            messages,
+            tools,
+            onAttempt: async event => {
+              await this.options.store.record(this.id, {
+                type: 'model.attempt',
+                turnId,
+                step,
+                event,
+              })
+            },
+          })
+        } catch (error: unknown) {
+          await this.options.store.record(this.id, {
+            type: 'model.invocation-failed',
+            turnId,
+            step,
+            errorName: errorName(error),
+            error: errorMessage(error),
+          })
+          throw error
+        }
+        await this.options.store.record(this.id, {
+          type: 'model.invocation-completed',
+          turnId,
+          step,
+          outputKind: output.kind,
+          outputChars: modelOutputChars(output),
+          reasoningChars: output.reasoningContent?.length ?? 0,
+          toolCallCount: output.kind === 'tool-calls' ? output.calls.length : 0,
+          ...(output.metadata === undefined ? {} : { metadata: output.metadata }),
         })
         this.emit({
           type: 'model.completed',
@@ -345,6 +386,15 @@ export async function runAgent({
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function errorName(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error
+}
+
+function modelOutputChars(output: ModelOutput): number {
+  if (output.kind === 'final') return output.content.length
+  return (output.content?.length ?? 0) + JSON.stringify(output.calls).length
 }
 
 interface ToolExecutionResult {

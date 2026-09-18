@@ -42,4 +42,4 @@ Durable traces would support post-run inspection, but adding a second event sche
 - Other user interfaces can observe the same Runtime interface without changing the Agent Loop.
 - Provider Reasoning Content is visible when available but is never fabricated.
 - Console rendering is testable independently from execution.
-- A process crash still loses timing and Reasoning Content; adding durable telemetry remains a separate evolution.
+- A process crash still loses Reasoning Content. ADR-015 later made Model Invocation and Provider Attempt timing durable without persisting the reasoning text itself.

@@ -99,7 +99,7 @@ _Avoid_: Conversation、Chat
 _Avoid_: Round、Request
 
 **Step**:
-Turn 内的一次模型推理；结果是最终答案，或者一组需要执行的 Tool Calls。
+Turn 内一次成功 Model Invocation 产生的模型决策；结果是最终答案，或者一组需要执行的 Tool Calls。
 _Avoid_: Turn、Action
 
 **Message**:
@@ -108,12 +108,20 @@ _Avoid_: Event、Log
 
 ### Observability
 
+**Model Invocation**:
+Runtime 请求 Model 产生下一个 Step 的一次逻辑调用。一次 Model Invocation 可能因重试产生多个 Provider Attempts，也可能失败而不产生 Step。
+_Avoid_: Provider Attempt、Step
+
+**Provider Attempt**:
+Model Invocation 为获得响应而向模型供应商发起的一次实际请求；重试是同一 Model Invocation 下的新 Provider Attempt。
+_Avoid_: Model Invocation、Step
+
 **Agent Event**:
 Runtime 在执行过程中同步发出的只读观察记录，用于 CLI 时间线、日志或未来 UI；不会成为 Message，也不改变 Agent 决策。
 _Avoid_: Message、Session Record
 
 **Execution Trace**:
-一个 Turn 的 Agent Events 按发生顺序形成的可观察执行链路，包括模型请求、模型输出、Tool Call、Tool Result、耗时和最终状态。
+一个 Turn 的 Agent Events 按发生顺序形成的可观察执行链路，包括 Model Invocation、Provider Attempt、模型输出、Tool Call、Tool Result、耗时和最终状态。
 _Avoid_: Message History、Model Context
 
 **Reasoning Content**:

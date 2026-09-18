@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { AgentSession, runAgent, type AgentEvent } from '../../src/runtime/agent-session.ts'
+import type { SessionRecord, SessionStore } from '../../src/runtime/session-store.ts'
 import { MemorySessionStore } from '../../src/storage/memory-session-store.ts'
 import type { Message, Model, ModelOutput, Tool } from '../../src/runtime/types.ts'
 
@@ -298,6 +299,58 @@ test('rolls back a failed turn before accepting the next turn', async () => {
     { role: 'user', content: 'new turn' },
     { role: 'assistant', content: 'recovered' },
   ])
+})
+
+test('records a failed model invocation before failing the turn', async () => {
+  const inner = new MemorySessionStore()
+  const records: SessionRecord[] = []
+  const store: SessionStore = {
+    createSession: async projectId => await inner.createSession(projectId),
+    loadSession: async sessionId => await inner.loadSession(sessionId),
+    record: async (sessionId, record) => {
+      records.push(structuredClone(record))
+      await inner.record(sessionId, record)
+    },
+  }
+  const session = await AgentSession.create({
+    model: {
+      descriptor: {
+        provider: 'test-provider',
+        model: 'test-model',
+        protocol: 'test',
+        requestTimeoutMs: 30_000,
+        maxRetries: 1,
+      },
+      async generate(input) {
+        await input.onAttempt?.({ type: 'started', attempt: 1 })
+        await input.onAttempt?.({
+          type: 'failed',
+          attempt: 1,
+          errorName: 'TimeoutError',
+          errorMessage: 'Request timed out.',
+        })
+        throw new Error('Request timed out.')
+      },
+    },
+    tools: [],
+    store,
+  })
+
+  await assert.rejects(session.send('inspect'), /Request timed out/)
+
+  assert.deepEqual(records.map(record => record.type), [
+    'turn.started',
+    'model.invocation-started',
+    'model.attempt',
+    'model.attempt',
+    'model.invocation-failed',
+    'turn.failed',
+  ])
+  const invocation = records.find(record => record.type === 'model.invocation-started')
+  assert.equal(
+    invocation?.type === 'model.invocation-started' ? invocation.descriptor?.model : undefined,
+    'test-model',
+  )
 })
 
 test('rejects concurrent turns on the same session', async () => {

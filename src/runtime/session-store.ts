@@ -1,4 +1,10 @@
-import type { Message, ToolCall } from './types.ts'
+import type {
+  Message,
+  ModelAttemptEvent,
+  ModelDescriptor,
+  ModelResponseMetadata,
+  ToolCall,
+} from './types.ts'
 
 export type SessionStatus = 'active'
 export type TurnStatus = 'running' | 'completed' | 'failed'
@@ -38,6 +44,38 @@ export interface AgentSessionSnapshot {
 
 export type SessionRecord =
   | { type: 'turn.started'; turnId: string; prompt: string }
+  | {
+      type: 'model.invocation-started'
+      turnId: string
+      step: number
+      descriptor?: ModelDescriptor
+      messageCount: number
+      toolCount: number
+      inputChars: number
+    }
+  | {
+      type: 'model.attempt'
+      turnId: string
+      step: number
+      event: ModelAttemptEvent
+    }
+  | {
+      type: 'model.invocation-completed'
+      turnId: string
+      step: number
+      outputKind: 'final' | 'tool-calls'
+      outputChars: number
+      reasoningChars: number
+      toolCallCount: number
+      metadata?: ModelResponseMetadata
+    }
+  | {
+      type: 'model.invocation-failed'
+      turnId: string
+      step: number
+      errorName: string
+      error: string
+    }
   | { type: 'step.tools-called'; turnId: string; step: number; calls: readonly ToolCall[] }
   | {
       type: 'step.tool-completed'
