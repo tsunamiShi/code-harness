@@ -1,4 +1,4 @@
-# ADR-003: Project groups workspace roots and selects one primary root
+# ADR-003: Project groups project roots and selects one primary root
 
 ## Status
 
@@ -10,11 +10,11 @@ Accepted
 
 ## Context
 
-A Code Agent task may span an application repository, a shared package, and supporting configuration stored in different directories. Treating one process working directory as the entire workspace would either exclude legitimate files or encourage unrestricted filesystem access. A Session also needs one deterministic base for relative paths and shell commands.
+A Code Agent task may span an application repository, a shared package, and supporting configuration stored in different directories. Treating one process working directory as the entire project would either exclude legitimate files or encourage unrestricted filesystem access. A Session also needs one deterministic base for relative paths and shell commands.
 
 ## Decision
 
-Introduce Project as the durable owner of one or more Workspace Roots. Every Project has exactly one Primary Root; remaining roots are attached. New durable Sessions reference a Project, and its Primary Root is the default working directory injected into model context.
+Introduce Project as the durable owner of one or more Project Roots. Every Project has exactly one Primary Root; remaining roots are attached. New durable Sessions reference a Project, and its Primary Root is the default working directory injected into model context.
 
 `ProjectCatalog` resolves every selected directory to its real absolute path, rejects non-directories, and removes duplicates before persistence. MySQL also enforces unique roots and at most one Primary Root per Project. Project creation inserts the Project and every root in one transaction, which guarantees at least one Primary Root for committed Projects.
 
@@ -22,7 +22,7 @@ Introduce Project as the durable owner of one or more Workspace Roots. Every Pro
 
 ### Store a working directory directly on Session
 
-This handles one folder but duplicates workspace configuration across conversations and does not represent multi-root projects.
+This handles one folder but duplicates Project Root configuration across conversations and does not represent multi-root Projects.
 
 ### Let every tool accept arbitrary absolute paths
 
@@ -34,7 +34,7 @@ This is convenient for a one-repository CLI, but restored Sessions could change 
 
 ## Consequences
 
-- Project configuration can be reused by multiple Sessions.
+- Project Root configuration can be reused by multiple Sessions.
 - Relative paths have one stable base even when a Project contains several roots.
 - Future filesystem and shell tools must enforce the Project roots; the current model instruction communicates scope but does not yet provide that security enforcement.
 - Changing roots and moving the Primary Root require explicit Project management commands that are not included in the first version.

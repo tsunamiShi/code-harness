@@ -11,7 +11,7 @@ import {
   primaryRoot,
   type AgentProject,
   type ProjectRoot,
-  type WorkspaceAccessMode,
+  type FilesystemAccessMode,
 } from '../projects/project.ts'
 import type { Tool } from '../runtime/types.ts'
 
@@ -32,12 +32,12 @@ const BINARY_SAMPLE_BYTES = 8_192
 const DEFAULT_EXCLUDES = ['.git/**', 'node_modules/**', 'dist/**'] as const
 
 /** Creates the filesystem tool set for one Project. */
-export function createWorkspaceTools(
+export function createFilesystemTools(
   project: AgentProject,
-  accessMode: WorkspaceAccessMode = 'scoped',
+  accessMode: FilesystemAccessMode = 'scoped',
 ): readonly Tool[] {
-  const workspace = new Workspace(project, accessMode)
-  const rootProperty = workspace.rootProperty()
+  const filesystem = new ProjectFilesystem(project, accessMode)
+  const rootProperty = filesystem.rootProperty()
   const scope = accessMode === 'full' ? 'the selected local directory' : 'the Project'
 
   return [
@@ -53,7 +53,7 @@ export function createWorkspaceTools(
             root: rootProperty,
             path: {
               type: 'string',
-              description: 'File path relative to the selected Workspace Root.',
+              description: 'File path relative to the selected Project Root.',
             },
             offset: {
               type: 'integer',
@@ -74,7 +74,7 @@ export function createWorkspaceTools(
       async execute(arguments_) {
         const input = readArguments(arguments_, 'Read', ['root', 'path', 'offset', 'limit'])
         return serialize(
-          await workspace.read({
+          await filesystem.read({
             root: optionalString(input, 'root'),
             path: requiredString(input, 'path', 'Read'),
             offset: optionalInteger(input, 'offset', 1, Number.MAX_SAFE_INTEGER) ?? 1,
@@ -95,7 +95,7 @@ export function createWorkspaceTools(
             root: rootProperty,
             path: {
               type: 'string',
-              description: 'Existing file path relative to the selected Workspace Root.',
+              description: 'Existing file path relative to the selected Project Root.',
             },
             oldText: {
               type: 'string',
@@ -120,7 +120,7 @@ export function createWorkspaceTools(
         assertMaximumCharacters(oldText, 'Edit oldText', MAX_EDIT_TEXT_CHARACTERS)
         assertMaximumCharacters(newText, 'Edit newText', MAX_EDIT_TEXT_CHARACTERS)
         return serialize(
-          await workspace.edit({
+          await filesystem.edit({
             root: optionalString(input, 'root'),
             path: requiredString(input, 'path', 'Edit'),
             oldText,
@@ -141,7 +141,7 @@ export function createWorkspaceTools(
             root: rootProperty,
             path: {
               type: 'string',
-              description: 'New file path relative to the selected Workspace Root.',
+              description: 'New file path relative to the selected Project Root.',
             },
             content: {
               type: 'string',
@@ -158,7 +158,7 @@ export function createWorkspaceTools(
         const content = requiredText(input, 'content', 'Write')
         assertMaximumCharacters(content, 'Write content', MAX_WRITE_CHARACTERS)
         return serialize(
-          await workspace.write({
+          await filesystem.write({
             root: optionalString(input, 'root'),
             path: requiredString(input, 'path', 'Write'),
             content,
@@ -198,7 +198,7 @@ export function createWorkspaceTools(
       async execute(arguments_) {
         const input = readArguments(arguments_, 'Glob', ['root', 'pattern', 'path', 'limit'])
         return serialize(
-          await workspace.glob({
+          await filesystem.glob({
             root: optionalString(input, 'root'),
             pattern: requiredString(input, 'pattern', 'Glob'),
             path: optionalString(input, 'path'),
@@ -255,7 +255,7 @@ export function createWorkspaceTools(
           'maxResults',
         ])
         return serialize(
-          await workspace.grep({
+          await filesystem.grep({
             root: optionalString(input, 'root'),
             pattern: requiredString(input, 'pattern', 'Grep'),
             path: optionalString(input, 'path'),
@@ -307,14 +307,14 @@ interface GrepInput {
   maxResults: number
 }
 
-class Workspace {
+class ProjectFilesystem {
   constructor(
     private readonly project: AgentProject,
-    private readonly accessMode: WorkspaceAccessMode,
+    private readonly accessMode: FilesystemAccessMode,
   ) {}
 
   rootProperty(): Record<string, unknown> {
-    return workspaceRootProperty(this.project, this.accessMode)
+    return projectRootProperty(this.project, this.accessMode)
   }
 
   async read(input: ReadInput): Promise<Record<string, unknown>> {
@@ -498,7 +498,7 @@ class Workspace {
   }
 
   private async selectRoot(value: string | undefined): Promise<ProjectRoot> {
-    return await selectWorkspaceRoot(this.project, this.accessMode, value)
+    return await selectProjectRoot(this.project, this.accessMode, value)
   }
 
   private async resolveExisting(
@@ -506,7 +506,7 @@ class Workspace {
     inputPath: string,
     expected: 'file' | 'directory' | 'file-or-directory',
   ): Promise<{ actualPath: string; displayPath: string }> {
-    return await resolveExistingWorkspacePath(root, inputPath, expected)
+    return await resolveExistingProjectPath(root, inputPath, expected)
   }
 
   private async resolveNewFile(
@@ -542,9 +542,9 @@ class Workspace {
 }
 
 /** Describes the model-facing root selector for the current access mode. */
-export function workspaceRootProperty(
+export function projectRootProperty(
   project: AgentProject,
-  accessMode: WorkspaceAccessMode,
+  accessMode: FilesystemAccessMode,
 ): Record<string, unknown> {
   if (accessMode === 'full') {
     return {
@@ -557,21 +557,21 @@ export function workspaceRootProperty(
     type: 'string',
     enum: ['primary', ...project.roots.map(root => root.path)],
     description:
-      'Workspace Root to use. Omit or use primary for the Primary Root; attached roots use their absolute path from the Project context.',
+      'Project Root to use. Omit or use primary for the Primary Root; attached roots use their absolute path from the Project context.',
   }
 }
 
 /** Resolves a model-selected root under scoped or full filesystem access. */
-export async function selectWorkspaceRoot(
+export async function selectProjectRoot(
   project: AgentProject,
-  accessMode: WorkspaceAccessMode,
+  accessMode: FilesystemAccessMode,
   value: string | undefined,
 ): Promise<ProjectRoot> {
   const primary = primaryRoot(project)
   if (value === undefined || value === 'primary') return primary
   const root = project.roots.find(candidate => candidate.path === value)
   if (root) return root
-  if (accessMode === 'scoped') throw new Error(`Unknown Workspace Root: ${value}`)
+  if (accessMode === 'scoped') throw new Error(`Unknown Project Root: ${value}`)
   if (!isAbsolute(value)) {
     throw new Error(`Full-access root must be an absolute directory: ${value}`)
   }
@@ -588,7 +588,7 @@ export async function selectWorkspaceRoot(
 }
 
 /** Resolves and validates an existing path without following it outside the selected root. */
-export async function resolveExistingWorkspacePath(
+export async function resolveExistingProjectPath(
   root: ProjectRoot,
   inputPath: string,
   expected: 'file' | 'directory' | 'file-or-directory',
@@ -601,19 +601,19 @@ export async function resolveExistingWorkspacePath(
   try {
     actualPath = await realpath(lexicalPath)
   } catch (error: unknown) {
-    throw new Error(`Workspace path does not exist: ${inputPath}`, { cause: error })
+    throw new Error(`Project path does not exist: ${inputPath}`, { cause: error })
   }
   assertInside(root.path, actualPath, inputPath)
 
   const details = await stat(actualPath)
   if (expected === 'file' && !details.isFile()) {
-    throw new Error(`Workspace path is not a file: ${inputPath}`)
+    throw new Error(`Project path is not a file: ${inputPath}`)
   }
   if (expected === 'directory' && !details.isDirectory()) {
-    throw new Error(`Workspace path is not a directory: ${inputPath}`)
+    throw new Error(`Project path is not a directory: ${inputPath}`)
   }
   if (expected === 'file-or-directory' && !details.isFile() && !details.isDirectory()) {
-    throw new Error(`Workspace path is not a file or directory: ${inputPath}`)
+    throw new Error(`Project path is not a file or directory: ${inputPath}`)
   }
   return { actualPath, displayPath: toDisplayPath(root.path, lexicalPath) }
 }
@@ -824,10 +824,10 @@ function optionalBoolean(input: Record<string, unknown>, key: string): boolean |
 }
 
 function requireRelativePath(value: string): string {
-  if (value.includes('\0')) throw new Error('Workspace path must not contain a null byte')
-  if (isAbsolute(value)) throw new Error(`Workspace path must be relative: ${value}`)
+  if (value.includes('\0')) throw new Error('Project path must not contain a null byte')
+  if (isAbsolute(value)) throw new Error(`Project path must be relative: ${value}`)
   if (pathSegments(value).includes('..')) {
-    throw new Error(`Workspace path must not contain parent traversal: ${value}`)
+    throw new Error(`Project path must not contain parent traversal: ${value}`)
   }
   return value.length === 0 ? '.' : value
 }
@@ -848,7 +848,7 @@ function pathSegments(value: string): readonly string[] {
 
 function assertInside(rootPath: string, candidatePath: string, inputPath: string): void {
   if (!isInside(rootPath, candidatePath)) {
-    throw new Error(`Workspace path escapes its selected root: ${inputPath}`)
+    throw new Error(`Project path escapes its selected root: ${inputPath}`)
   }
 }
 

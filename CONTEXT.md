@@ -34,14 +34,14 @@ _Avoid_: Final Answer、Message
 模型在一个 Step 中返回的一组 Tool Calls。仅当所有目标 Tools 都声明为 parallel-safe 时并行执行，仍然只计为一个 Step。
 _Avoid_: Multi-Step、Read Many
 
-### Project workspace
+### Project filesystem
 
 **Project**:
-一组共同参与代码任务的 Workspace Root，以及供 Session 使用的唯一 Primary Root。
-_Avoid_: Workspace、Repository
+持久化的一组代码目录，拥有唯一的 Primary Root 和零个或多个 Attached Root；Session 绑定到一个 Project。
+_Avoid_: Repository、Root
 
-**Workspace Root**:
-Project 授权 Agent 使用的一个本地目录。一个 Project 可以包含多个 Workspace Root。
+**Project Root**:
+Project 授权 Agent 使用的一个本地目录。一个 Project 可以包含多个 Project Roots。
 _Avoid_: Project、Working Directory
 
 **Primary Root**:
@@ -52,32 +52,32 @@ _Avoid_: Current Directory、Main Project
 Project 中除 Primary Root 外的授权目录，不改变默认工作目录。
 _Avoid_: Secondary Project、Dependency
 
-**Workspace Tool**:
-绑定到一个 Project，并在所选 Workspace Root 内执行文件操作的 Tool。路径授权由 Runtime 强制执行，不依赖模型遵守 Prompt。
+**Filesystem Tool**:
+绑定到一个 Project，并在所选 Project Root 内执行文件操作的 Tool。路径授权由 Runtime 强制执行，不依赖模型遵守 Prompt。
 _Avoid_: Global Tool、Project Tool
 
-**Workspace Access Mode**:
-当前 CLI 进程对 Workspace Tool 的 Root 授权策略。`scoped` 只允许 Project Roots，`full` 允许读取和修改任意本地绝对目录；不属于 Session 持久状态。
+**Filesystem Access Mode**:
+当前 CLI 进程对 Filesystem Tool 的 Root 授权策略。`scoped` 只允许 Project Roots，`full` 允许读取和修改任意本地绝对目录；不属于 Session 持久状态。
 _Avoid_: Project Permission、Session Permission
 
 **Read**:
-读取 Workspace Root 内一个 UTF-8 文本文件的有界行范围。
+读取 Project Root 内一个 UTF-8 文本文件的有界行范围。
 _Avoid_: Fetch、Open
 
 **Edit**:
-在 Workspace Root 内的已有 UTF-8 文件中精确替换唯一一处文本。Edit 不创建文件，并以原子文件替换提交修改。
+在 Project Root 内的已有 UTF-8 文件中精确替换唯一一处文本。Edit 不创建文件，并以原子文件替换提交修改。
 _Avoid_: Write、Patch、Search and Replace All
 
 **Write**:
-在 Workspace Root 内创建一个此前不存在的 UTF-8 文件。Write 不覆盖已有路径。
+在 Project Root 内创建一个此前不存在的 UTF-8 文件。Write 不覆盖已有路径。
 _Avoid_: Edit、Overwrite、Append
 
 **Glob**:
-按相对路径模式查找 Workspace Root 内的候选文件。
+按相对路径模式查找 Project Root 内的候选文件。
 _Avoid_: List Files、Find Files
 
 **Grep**:
-按正则表达式搜索 Workspace Root 内的文件内容，并返回匹配文件和行号。
+按正则表达式搜索 Project Root 内的文件内容，并返回匹配文件和行号。
 _Avoid_: Search Text、Search
 
 **Bash**:

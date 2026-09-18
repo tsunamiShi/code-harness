@@ -1,12 +1,12 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 
-import type { AgentProject, WorkspaceAccessMode } from '../projects/project.ts'
+import type { AgentProject, FilesystemAccessMode } from '../projects/project.ts'
 import type { Tool } from '../runtime/types.ts'
 import {
-  resolveExistingWorkspacePath,
-  selectWorkspaceRoot,
-  workspaceRootProperty,
-} from './workspace-tools.ts'
+  resolveExistingProjectPath,
+  selectProjectRoot,
+  projectRootProperty,
+} from './filesystem-tools.ts'
 
 const DEFAULT_TIMEOUT_MS = 30_000
 const MAX_TIMEOUT_MS = 120_000
@@ -16,7 +16,7 @@ const MAX_OUTPUT_CHARACTERS = 64_000
 /** Creates a full-access shell Tool; scoped execution requires an OS sandbox first. */
 export function createBashTool(
   project: AgentProject,
-  accessMode: WorkspaceAccessMode,
+  accessMode: FilesystemAccessMode,
 ): Tool {
   if (accessMode !== 'full') {
     throw new Error('Bash requires full filesystem access because no OS sandbox is configured')
@@ -31,7 +31,7 @@ export function createBashTool(
       parameters: {
         type: 'object',
         properties: {
-          root: workspaceRootProperty(project, accessMode),
+          root: projectRootProperty(project, accessMode),
           path: {
             type: 'string',
             description: 'Optional working directory relative to the selected root.',
@@ -59,8 +59,8 @@ export function createBashTool(
       if (command.length > MAX_COMMAND_CHARACTERS) {
         throw new Error(`Bash command exceeds the ${MAX_COMMAND_CHARACTERS}-character limit`)
       }
-      const root = await selectWorkspaceRoot(project, accessMode, optionalString(input, 'root'))
-      const workingDirectory = await resolveExistingWorkspacePath(
+      const root = await selectProjectRoot(project, accessMode, optionalString(input, 'root'))
+      const workingDirectory = await resolveExistingProjectPath(
         root,
         optionalString(input, 'path') ?? '.',
         'directory',

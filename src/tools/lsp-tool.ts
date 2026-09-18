@@ -11,14 +11,14 @@ import {
   type MessageConnection,
 } from 'vscode-jsonrpc/node'
 
-import type { AgentProject, ProjectRoot, WorkspaceAccessMode } from '../projects/project.ts'
+import type { AgentProject, ProjectRoot, FilesystemAccessMode } from '../projects/project.ts'
 import type { Tool } from '../runtime/types.ts'
 import { LspClientPool, type PooledLspClient } from './lsp-client-pool.ts'
 import {
-  resolveExistingWorkspacePath,
-  selectWorkspaceRoot,
-  workspaceRootProperty,
-} from './workspace-tools.ts'
+  resolveExistingProjectPath,
+  selectProjectRoot,
+  projectRootProperty,
+} from './filesystem-tools.ts'
 import { VueTsServerBridge } from './vue-tsserver-bridge.ts'
 
 const LSP_TIMEOUT_MS = 15_000
@@ -38,7 +38,7 @@ type LspOperation = 'definition' | 'references' | 'hover'
 /** Creates read-only Vue, TypeScript, and JavaScript intelligence backed by real LSP servers. */
 export function createLspTool(
   project: AgentProject,
-  accessMode: WorkspaceAccessMode,
+  accessMode: FilesystemAccessMode,
 ): Tool {
   const clients = new LspClientPool<LanguageServerQuery, Record<string, unknown>>(
     (_key, input) => new LanguageServerClient(input.root, input.languageServer),
@@ -52,7 +52,7 @@ export function createLspTool(
       parameters: {
         type: 'object',
         properties: {
-          root: workspaceRootProperty(project, accessMode),
+          root: projectRootProperty(project, accessMode),
           operation: {
             type: 'string',
             enum: ['definition', 'references', 'hover'],
@@ -83,8 +83,8 @@ export function createLspTool(
       const inputPath = requiredString(input, 'path')
       const line = requiredInteger(input, 'line')
       const column = requiredInteger(input, 'column')
-      const root = await selectWorkspaceRoot(project, accessMode, optionalString(input, 'root'))
-      const target = await resolveExistingWorkspacePath(root, inputPath, 'file')
+      const root = await selectProjectRoot(project, accessMode, optionalString(input, 'root'))
+      const target = await resolveExistingProjectPath(root, inputPath, 'file')
       const languageServer = languageServerFor(inputPath)
       const content = await readFile(target.actualPath, 'utf8')
       const query = {
@@ -279,7 +279,7 @@ class LanguageServerClient implements PooledLspClient<LanguageServerQuery, Recor
         processId: process.pid,
         clientInfo: { name: 'ai-agent', version: '0.1.0' },
         rootUri: pathToFileURL(this.root.path).href,
-        workspaceFolders: [{ uri: pathToFileURL(this.root.path).href, name: 'workspace' }],
+        workspaceFolders: [{ uri: pathToFileURL(this.root.path).href, name: 'project' }],
         capabilities: {
           workspace: { workspaceFolders: true },
           textDocument: {

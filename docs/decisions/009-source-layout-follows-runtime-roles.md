@@ -10,7 +10,7 @@ Accepted
 
 ## Context
 
-The first implementation kept every source file directly under `src/`. As the Agent gained Projects, storage, Workspace Tools, CLI parsing, and terminal traces, unrelated responsibilities became visually indistinguishable. File names did not communicate which code belonged to the reusable Runtime and which code adapted an external system.
+The first implementation kept every source file directly under `src/`. As the Agent gained Projects, storage, Filesystem Tools, CLI parsing, and terminal traces, unrelated responsibilities became visually indistinguishable. File names did not communicate which code belonged to the reusable Runtime and which code adapted an external system.
 
 The model Adapter was named `QwenModel`, although it uses the OpenAI-compatible Chat Completions protocol and the current deployment runs `glm-5.3` through Alibaba Model Studio. The class name described an earlier model choice instead of its stable interface and protocol.
 
@@ -21,7 +21,7 @@ Group source files by runtime role:
 - `runtime/` owns the Agent Loop, core Model and Tool types, and the `SessionStore` interface used by the loop.
 - `models/` contains Model adapters.
 - `tools/` contains Tool implementations.
-- `projects/` owns Project and Workspace Root behavior.
+- `projects/` owns Project and Project Root behavior.
 - `storage/` contains persistence adapters.
 - `cli/` contains process entry points, argument parsing, environment configuration, and terminal presentation.
 

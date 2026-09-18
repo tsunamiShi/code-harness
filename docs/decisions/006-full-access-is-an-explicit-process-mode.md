@@ -16,12 +16,12 @@ Removing Project checks globally would make every invocation broad by default. P
 
 ## Decision
 
-Support two runtime `WorkspaceAccessMode` values:
+Support two runtime `FilesystemAccessMode` values:
 
 - `scoped` is the default and accepts only the Project's Primary and Attached Roots.
 - `full` accepts any existing absolute local directory as the `root` argument for `Read`, `Glob`, and `Grep`.
 
-Users enable full access for one CLI process with `--full-access` on either a new or resumed Session. The mode is passed to the Workspace Tools and model instructions, displayed in the startup banner, and not persisted in MySQL. Every later CLI process defaults to `scoped` unless the flag is supplied again.
+Users enable full access for one CLI process with `--full-access` on either a new or resumed Session. The mode is passed to the Filesystem Tools and model instructions, displayed in the startup banner, and not persisted in MySQL. Every later CLI process defaults to `scoped` unless the flag is supplied again.
 
 Full access changes root authorization only. Tool paths remain relative to the selected root, and the existing read-only behavior, binary checks, result limits, search exclusions, and timeouts remain active. Operating-system permissions and macOS privacy controls can still deny access.
 
@@ -48,6 +48,6 @@ This would create different path semantics between modes. Keeping `root + relati
 - Full access must be visibly requested on every CLI launch.
 - The model can select an unregistered absolute directory without modifying the Project.
 - A Session's persisted Messages do not imply that a future process has the same authority.
-- Full access currently applies only to the read-only Workspace Tools; future mutation and Shell Tools need their own permission and approval design.
+- Full access currently applies only to the read-only Filesystem Tools; future mutation and Shell Tools need their own permission and approval design.
 
-ADR-012 supersedes the read-only scope of this decision. Full access now authorizes all Workspace Tools, including Edit and Write.
+ADR-012 supersedes the read-only scope of this decision. Full access now authorizes all Filesystem Tools, including Edit and Write.

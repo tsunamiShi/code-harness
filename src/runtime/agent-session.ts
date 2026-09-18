@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 
-import { projectInstructions, type AgentProject, type WorkspaceAccessMode } from '../projects/project.ts'
+import { projectInstructions, type AgentProject, type FilesystemAccessMode } from '../projects/project.ts'
 import { MemorySessionStore } from '../storage/memory-session-store.ts'
 import {
   projectMessages,
@@ -15,7 +15,7 @@ export interface AgentSessionOptions {
   tools: readonly Tool[]
   store: SessionStore
   project?: AgentProject
-  accessMode?: WorkspaceAccessMode
+  accessMode?: FilesystemAccessMode
   maxSteps?: number
   onEvent?: (event: AgentEvent) => void
 }

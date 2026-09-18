@@ -5,8 +5,8 @@ import { readProjectCommand } from '../../src/cli/project-arguments.ts'
 
 test('parses an Attached Root command', () => {
   assert.deepEqual(
-    readProjectCommand(['attach', 'project-1', '--path', '/workspace/shared']),
-    { kind: 'attach', projectId: 'project-1', path: '/workspace/shared' },
+    readProjectCommand(['attach', 'project-1', '--path', '/project/shared']),
+    { kind: 'attach', projectId: 'project-1', path: '/project/shared' },
   )
 })
 

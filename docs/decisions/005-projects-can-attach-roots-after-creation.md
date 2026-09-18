@@ -30,7 +30,7 @@ This reuses the existing creation command but changes Project identity and leave
 
 ### Let individual Sessions add roots
 
-This would duplicate workspace configuration and weaken Project as the durable authorization owner shared by its Sessions.
+This would duplicate Project Root configuration and weaken Project as the durable authorization owner shared by its Sessions.
 
 ### Automatically discover and authorize referenced directories
 

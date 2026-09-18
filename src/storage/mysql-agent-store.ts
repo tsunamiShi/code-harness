@@ -290,10 +290,10 @@ function validateProjectRoots(roots: readonly ProjectRoot[]): void {
   const primaryRoots = roots.filter(root => root.role === 'primary')
   if (primaryRoots.length !== 1) throw new Error('A project must have exactly one primary root')
   if (new Set(roots.map(root => root.path)).size !== roots.length) {
-    throw new Error('A project cannot contain duplicate workspace roots')
+    throw new Error('A project cannot contain duplicate project roots')
   }
   if (roots.some(root => root.path.length === 0)) {
-    throw new Error('A workspace root path must not be empty')
+    throw new Error('A project root path must not be empty')
   }
 }
 

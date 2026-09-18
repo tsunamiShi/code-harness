@@ -207,7 +207,7 @@ async function createFixture(t: test.TestContext): Promise<{
   return {
     project: {
       id: 'project-1',
-      name: 'workspace',
+      name: 'project',
       roots: [{ path: primary, role: 'primary' }],
     },
     primary,

@@ -24,14 +24,14 @@ src/
 ├─ runtime/   AgentSession、Agent Loop、Model/Tool/Message 类型和 SessionStore 接口
 ├─ models/    模型协议 Adapter
 ├─ tools/     Runtime 可执行的 Tool 实现
-├─ projects/  Project、Workspace Root 和 ProjectCatalog
+├─ projects/  Project、Project Root 和 ProjectCatalog
 ├─ storage/   内存与 MySQL 持久化 Adapter
 └─ cli/       命令入口、参数解析、环境配置和终端输出
 ```
 
 `models/openai-compatible-chat-model.ts` 按协议而不是模型品牌命名。它通过 OpenAI-compatible Chat Completions 协议连接当前 `.env` 配置的模型，因此可以使用百炼提供的 Qwen、GLM 或其他兼容模型，而不需要为每个模型复制一个 Adapter。
 
-## Workspace Tools
+## Filesystem Tools
 
 CLI 在 Scoped 模式暴露六个代码工具：
 
@@ -42,7 +42,7 @@ CLI 在 Scoped 模式暴露六个代码工具：
 - `Write`：创建一个此前不存在的 UTF-8 文件。
 - `LSP`：查询 Vue/TypeScript/JavaScript 的源码定义、引用和 Hover 类型信息。
 
-前五个 Workspace Tools 默认使用 Project 的 Primary Root；`root` 参数可以选择一个 Attached Root。所有路径都必须相对于所选 Root，运行时会检查规范路径和符号链接的真实目标。结果包含固定上限和截断标记，Tool Error 会写入 Step 并返回模型修正，而不是直接结束 Turn。
+前五个 Filesystem Tools 默认使用 Project 的 Primary Root；`root` 参数可以选择一个 Attached Root。所有路径都必须相对于所选 Root，运行时会检查规范路径和符号链接的真实目标。结果包含固定上限和截断标记，Tool Error 会写入 Step 并返回模型修正，而不是直接结束 Turn。
 
 `Edit` 要求 `oldText` 在不超过 2 MB 的目标文件中恰好出现一次，单个 `oldText` 或 `newText` 最多 64,000 字符。它先写入同目录临时文件、复查原文件未变化，再原子替换目标并返回修改行范围和修改前后的 SHA-256。`Edit` 不支持创建文件。
 
@@ -50,7 +50,7 @@ CLI 在 Scoped 模式暴露六个代码工具：
 
 `LSP` 当前支持 `definition / references / hover`，并按文件类型选择语言服务：TypeScript/JavaScript 使用 `typescript-language-server`，Vue SFC 使用 `@vue/language-server` 与 `@vue/typescript-plugin` 组成的复合适配器。Vue Language Server 负责 SFC 文档服务及其自定义协议，Vue TypeScript Plugin 通过 `tsserver` 提供 `<script>` 内的 TypeScript 语义。这个差异被封装在同一个模型可见工具后面，避免为每种语言增加一套工具。
 
-模型统一使用从 1 开始的行列号，Runtime 将不同协议结果归一化为 Root 相对路径，并过滤所选 Root 之外的位置。同一个 CLI 进程按 Workspace Root 和语言 Provider 复用 Language Server；查询前通过 `didOpen / didChange` 同步当前文件，单个客户端内串行执行协议请求。客户端池最多保留四组进程，使用 LRU 回收较旧的 Root；CLI 退出时通过 Tool 的 `close()` 生命周期钩子关闭全部子进程。进程意外退出后，下一次只读查询会重建客户端并重试一次。
+模型统一使用从 1 开始的行列号，Runtime 将不同协议结果归一化为 Root 相对路径，并过滤所选 Root 之外的位置。同一个 CLI 进程按 Project Root 和语言 Provider 复用 Language Server；查询前通过 `didOpen / didChange` 同步当前文件，单个客户端内串行执行协议请求。客户端池最多保留四组进程，使用 LRU 回收较旧的 Root；CLI 退出时通过 Tool 的 `close()` 生命周期钩子关闭全部子进程。进程意外退出后，下一次只读查询会重建客户端并重试一次。
 
 Full Access 模式额外暴露 `Bash`。它以选定 Root 或其相对子目录为 `cwd`，返回退出码、信号、stdout、stderr、超时和截断信息；非零退出属于可供模型修正的执行结果。当前默认超时 30 秒、最大 120 秒，stdout/stderr 各最多返回 64,000 字符。
 
@@ -113,7 +113,7 @@ pnpm chat -- --project <project-id> --full-access
 pnpm chat -- --session <session-id> --full-access
 ```
 
-`--full-access` 允许全部 Workspace Tools 选择任意存在的绝对目录作为 `root`，包括通过 `Edit / Write` 修改或创建文件。工具仍然执行相对路径、符号链接、文件类型、结果上限、超时和内容大小检查。该授权不写入数据库，下次启动必须重新声明；操作系统权限和 macOS 隐私控制仍可能拒绝访问。
+`--full-access` 允许全部 Filesystem Tools 选择任意存在的绝对目录作为 `root`，包括通过 `Edit / Write` 修改或创建文件。工具仍然执行相对路径、符号链接、文件类型、结果上限、超时和内容大小检查。该授权不写入数据库，下次启动必须重新声明；操作系统权限和 macOS 隐私控制仍可能拒绝访问。
 
 Full Access 还会启用 `Bash`。`cwd` 不是安全边界：Shell 命令可以使用绝对路径或自行切换目录，因此在没有 OS sandbox 的阶段，Scoped 模式不会向模型提供 Bash。
 
@@ -141,8 +141,8 @@ Reasoning Content 只来自供应商响应的 `reasoning_content` 字段。并�
 
 - [ADR-001: Session owns multi-turn conversation history](docs/decisions/001-session-owns-conversation-history.md)
 - [ADR-002: MySQL persists Sessions, Turns, and Steps](docs/decisions/002-mysql-persists-session-turns-and-steps.md)
-- [ADR-003: Project groups workspace roots and selects one primary root](docs/decisions/003-project-groups-workspace-roots.md)
-- [ADR-004: Project-scoped Read, Glob, and Grep provide filesystem perception](docs/decisions/004-project-scoped-read-only-workspace-tools.md)
+- [ADR-003: Project groups project roots and selects one primary root](docs/decisions/003-project-groups-project-roots.md)
+- [ADR-004: Project-scoped Read, Glob, and Grep provide filesystem perception](docs/decisions/004-project-scoped-read-only-filesystem-tools.md)
 - [ADR-005: Projects can attach roots after creation](docs/decisions/005-projects-can-attach-roots-after-creation.md)
 - [ADR-006: Full filesystem access is an explicit process mode](docs/decisions/006-full-access-is-an-explicit-process-mode.md)
 - [ADR-007: Steps can contain parallel Tool Calls](docs/decisions/007-steps-can-contain-parallel-tool-calls.md)
@@ -150,7 +150,7 @@ Reasoning Content 只来自供应商响应的 `reasoning_content` 字段。并�
 - [ADR-009: Source layout follows runtime roles](docs/decisions/009-source-layout-follows-runtime-roles.md)
 - [ADR-010: Edit performs scoped exact replacements](docs/decisions/010-edit-performs-scoped-exact-replacements.md)
 - [ADR-011: Write creates new Project files without overwriting](docs/decisions/011-write-creates-new-project-files.md)
-- [ADR-012: Full access authorizes all Workspace Tools](docs/decisions/012-full-access-authorizes-all-workspace-tools.md)
+- [ADR-012: Full access authorizes all Filesystem Tools](docs/decisions/012-full-access-authorizes-all-filesystem-tools.md)
 - [ADR-013: Unsandboxed Bash requires full access](docs/decisions/013-unsandboxed-bash-requires-full-access.md)
 - [ADR-014: Reuse language servers within the CLI process](docs/decisions/014-reuse-language-servers-within-cli-process.md)
 

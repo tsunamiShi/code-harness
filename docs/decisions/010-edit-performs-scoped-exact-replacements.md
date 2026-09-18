@@ -20,11 +20,11 @@ Full filesystem access is an explicit launch-time decision to trust the Agent wi
 
 Add an `Edit` Tool that replaces `oldText` with `newText` in one existing UTF-8 file. `oldText` must be non-empty, differ from `newText`, and occur exactly once. A missing match tells the model to read current content; multiple matches require more surrounding context. An empty `newText` deletes the matched text.
 
-Edit accepts the Project's Primary and Attached Roots in scoped mode. With `--full-access`, it can select any existing absolute local directory as its Root. Relative-path, canonical-path, symbolic-link, regular-file, and binary checks are shared with the existing Workspace implementation.
+Edit accepts the Project's Primary and Attached Roots in scoped mode. With `--full-access`, it can select any existing absolute local directory as its Root. Relative-path, canonical-path, symbolic-link, regular-file, and binary checks are shared with the existing Project Filesystem implementation.
 
 The target file may be at most 2 MB, and each replacement argument may contain at most 64,000 characters. Edit writes a same-directory temporary file with the target mode, verifies that the source content has not changed since it was read, and renames the temporary file over the target. Its Tool Result includes the changed line range and before/after SHA-256 values without returning the complete file again.
 
-Edit is not parallel-safe. A Tool Call batch containing Edit is therefore executed serially by the Runtime. Interactive write approval remains a separate future Runtime policy; Workspace Access Mode is the current Root authorization.
+Edit is not parallel-safe. A Tool Call batch containing Edit is therefore executed serially by the Runtime. Interactive write approval remains a separate future Runtime policy; Filesystem Access Mode is the current Root authorization.
 
 ## Alternatives Considered
 

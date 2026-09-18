@@ -12,13 +12,13 @@ Accepted
 
 The LSP Tool originally started and stopped a Language Server for every query. A TypeScript query launched one Node child process. A Vue query launched both Vue Language Server and a Vue-enabled tsserver. Repeated Definition, References, and Hover calls therefore paid process startup, initialization, project discovery, and indexing costs every time.
 
-A reusable client must also handle file changes, concurrent protocol requests, child-process failure, multiple Workspace Roots, and CLI shutdown. A process-global cache without ownership would improve warm-query latency but leak child processes and make tests depend on hidden state.
+A reusable client must also handle file changes, concurrent protocol requests, child-process failure, multiple Project Roots, and CLI shutdown. A process-global cache without ownership would improve warm-query latency but leak child processes and make tests depend on hidden state.
 
 ## Decision
 
-One LSP Tool owns a bounded pool of reusable language clients for the lifetime of the CLI process. The pool key combines the canonical Workspace Root path and language Provider. It retains at most four clients and closes the least recently used client before admitting another.
+One LSP Tool owns a bounded pool of reusable language clients for the lifetime of the CLI process. The pool key combines the canonical Project Root path and language Provider. It retains at most four clients and closes the least recently used client before admitting another.
 
-Each client initializes its Language Server once and serializes its requests. Before every query, it reads the file through the existing Workspace Tool checks and sends `didOpen` for a new document or `didChange` when its content has changed. The Vue adapter synchronizes the same content with its Vue-enabled tsserver.
+Each client initializes its Language Server once and serializes its requests. Before every query, it reads the file through the existing Filesystem Tool checks and sends `didOpen` for a new document or `didChange` when its content has changed. The Vue adapter synchronizes the same content with its Vue-enabled tsserver.
 
 `Tool` has an optional asynchronous `close()` lifecycle method. The chat CLI closes every Tool before closing storage. LSP tests close their Tool explicitly. If a language process exits unexpectedly, the pool discards the unhealthy client, creates a replacement, and retries the read-only query once.
 
@@ -38,7 +38,7 @@ TypeScript Language Server and Vue Language Server are distinct protocols and pr
 
 ### Persist language processes across CLI restarts
 
-An external daemon could remove first-query cold starts, but it requires discovery, version negotiation, stale-workspace cleanup, and authorization beyond the current single-process CLI architecture.
+An external daemon could remove first-query cold starts, but it requires discovery, version negotiation, stale-project cleanup, and authorization beyond the current single-process CLI architecture.
 
 ## Consequences
 

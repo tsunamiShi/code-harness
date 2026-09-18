@@ -1,7 +1,7 @@
 import { stat, realpath } from 'node:fs/promises'
 
 export type ProjectRootRole = 'primary' | 'attached'
-export type WorkspaceAccessMode = 'scoped' | 'full'
+export type FilesystemAccessMode = 'scoped' | 'full'
 
 export interface ProjectRoot {
   path: string
@@ -83,37 +83,37 @@ export function primaryRoot(project: AgentProject): ProjectRoot {
 /** Produces stable model instructions from the Project and current runtime access mode. */
 export function projectInstructions(
   project: AgentProject,
-  accessMode: WorkspaceAccessMode = 'scoped',
+  accessMode: FilesystemAccessMode = 'scoped',
 ): string {
   const primary = primaryRoot(project)
   const roots = project.roots.map(root => `- ${root.path} (${root.role})`).join('\n')
   const instructions = [
     `Project: ${project.name}`,
     `Primary working directory: ${primary.path}`,
-    'Workspace roots:',
+    'Project roots:',
     roots,
     'Resolve relative paths against the primary working directory.',
   ]
   if (accessMode === 'full') {
     instructions.push(
       'Filesystem access mode: full.',
-      'All Workspace Tools, including Edit and Write, may select any absolute local directory as root; paths remain relative to that root.',
+      'All Filesystem Tools, including Edit and Write, may select any absolute local directory as root; paths remain relative to that root.',
     )
   } else {
-    instructions.push('Do not access paths outside the listed workspace roots.')
+    instructions.push('Do not access paths outside the listed project roots.')
   }
   return instructions.join('\n')
 }
 
 async function resolveDirectory(path: string): Promise<string> {
-  if (path.trim().length === 0) throw new Error('Workspace root path must not be empty')
+  if (path.trim().length === 0) throw new Error('Project root path must not be empty')
   let resolved: string
   try {
     resolved = await realpath(path)
   } catch (error: unknown) {
-    throw new Error(`Workspace root does not exist: ${path}`, { cause: error })
+    throw new Error(`Project root does not exist: ${path}`, { cause: error })
   }
   const details = await stat(resolved)
-  if (!details.isDirectory()) throw new Error(`Workspace root is not a directory: ${path}`)
+  if (!details.isDirectory()) throw new Error(`Project root is not a directory: ${path}`)
   return resolved
 }

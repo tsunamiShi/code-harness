@@ -7,7 +7,7 @@ export interface PooledLspClient<Input, Output> {
   close(): Promise<void>
 }
 
-/** Reuses language clients by workspace and bounds retained child processes with LRU eviction. */
+/** Reuses language clients by project and bounds retained child processes with LRU eviction. */
 export class LspClientPool<Input, Output> {
   private readonly clients = new Map<string, PooledLspClient<Input, Output>>()
   private closed = false

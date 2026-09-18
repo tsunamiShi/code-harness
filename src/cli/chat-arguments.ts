@@ -1,9 +1,9 @@
-import type { WorkspaceAccessMode } from '../projects/project.ts'
+import type { FilesystemAccessMode } from '../projects/project.ts'
 
 export type ChatTarget = {
   kind: 'project' | 'session'
   id: string
-  accessMode: WorkspaceAccessMode
+  accessMode: FilesystemAccessMode
 }
 
 /** Parses direct Node arguments and pnpm arguments that retain a leading separator. */

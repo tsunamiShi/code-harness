@@ -44,7 +44,7 @@ Shell redirection makes quoting, exclusive creation, path authorization, and str
 
 ## Consequences
 
-- The Agent can add source files, tests, and configuration under an authorized Workspace Root.
+- The Agent can add source files, tests, and configuration under an authorized Project Root.
 - Existing paths and symbolic links are never overwritten; the model must use Edit or choose another path.
 - Missing parent directories fail visibly instead of creating an implicit directory tree.
 - A successful result is compact and can be checked later with Read or its SHA-256.

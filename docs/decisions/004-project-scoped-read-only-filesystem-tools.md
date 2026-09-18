@@ -22,7 +22,7 @@ Expose exactly three model-visible filesystem perception Tools:
 - `Grep` locates matching lines by regular expression.
 - `Read` returns an exact bounded line range from one text file.
 
-`createWorkspaceTools(project)` binds all three Tools to one durable Project. Every Tool defaults to the Primary Root and can select an Attached Root by its exact Project path. Tool paths and glob patterns must be relative. The shared Workspace implementation resolves existing paths to real paths and rejects results outside the selected root, including symbolic-link escapes.
+`createFilesystemTools(project)` binds all three Tools to one durable Project. Every Tool defaults to the Primary Root and can select an Attached Root by its exact Project path. Tool paths and glob patterns must be relative. The shared Project Filesystem implementation resolves existing paths to real paths and rejects results outside the selected root, including symbolic-link escapes.
 
 Results use bounded JSON objects rather than unstructured terminal output. `Read` limits lines and characters, `Glob` limits candidates and returned files, and `Grep` limits matching lines and execution time. `Glob` uses the Node filesystem implementation. `Grep` runs the project-pinned ripgrep binary because its regular-expression engine, ignore handling, binary detection, and separate process are safer than evaluating model-provided JavaScript regular expressions in the Agent process.
 

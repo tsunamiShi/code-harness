@@ -1,4 +1,4 @@
-# ADR-012: Full access authorizes all Workspace Tools
+# ADR-012: Full access authorizes all Filesystem Tools
 
 ## Status
 
@@ -16,7 +16,7 @@ Requiring users to attach every directory before modifying it makes `--full-acce
 
 ## Decision
 
-`WorkspaceAccessMode` applies uniformly to every Workspace Tool. In `scoped` mode, Read, Edit, Write, Glob, and Grep accept only the Project's Primary and Attached Roots. In `full` mode, all five Tools may select any existing absolute local directory as their Root.
+`FilesystemAccessMode` applies uniformly to every Filesystem Tool. In `scoped` mode, Read, Edit, Write, Glob, and Grep accept only the Project's Primary and Attached Roots. In `full` mode, all five Tools may select any existing absolute local directory as their Root.
 
 Full access changes Root authorization, not each Tool's operation rules. Paths remain relative to the selected Root; traversal and symbolic-link escape checks remain active; Edit still requires an existing UTF-8 file and one exact match; Write still creates only a new file without overwriting. Operating-system permissions and macOS privacy controls remain the outer limit.
 
@@ -37,4 +37,4 @@ This exposes finer-grained policy but creates combinations that are not yet need
 - `--full-access` now authorizes Edit and Write outside Project Roots.
 - Scoped mode remains unchanged and continues to reject unregistered Roots.
 - Full access is a high-trust mode because a model-directed Tool Call can modify any file writable by the CLI process.
-- Future mutating Workspace Tools inherit the same access mode unless their operation requires a separate authorization model.
+- Future mutating Filesystem Tools inherit the same access mode unless their operation requires a separate authorization model.

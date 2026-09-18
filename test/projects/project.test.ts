@@ -21,19 +21,19 @@ test('creates a project with one primary root and deduplicated attached roots', 
   const store = new RecordingProjectStore()
 
   const project = await new ProjectCatalog(store).create({
-    name: ' workspace ',
+    name: ' project ',
     primaryPath: primary,
     additionalPaths: [attached, attached, primary],
   })
 
-  assert.equal(project.name, 'workspace')
+  assert.equal(project.name, 'project')
   assert.deepEqual(project.roots, [
     { path: await realpath(primary), role: 'primary' },
     { path: await realpath(attached), role: 'attached' },
   ])
 })
 
-test('rejects a workspace root that is not a directory', async t => {
+test('rejects a project root that is not a directory', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'ai-agent-project-'))
   t.after(async () => await rm(directory, { recursive: true, force: true }))
   const file = join(directory, 'file.txt')
@@ -56,7 +56,7 @@ test('attaches a canonical directory to an existing project', async t => {
   await Promise.all([mkdir(primary), mkdir(attached)])
   const store = new RecordingProjectStore()
   const catalog = new ProjectCatalog(store)
-  const project = await catalog.create({ name: 'workspace', primaryPath: primary })
+  const project = await catalog.create({ name: 'project', primaryPath: primary })
 
   const updated = await catalog.attach(project.id, attached)
 
@@ -69,8 +69,8 @@ test('attaches a canonical directory to an existing project', async t => {
 test('full-access instructions allow arbitrary roots without changing the Project', () => {
   const project: AgentProject = {
     id: 'project-1',
-    name: 'workspace',
-    roots: [{ path: '/workspace/primary', role: 'primary' }],
+    name: 'project',
+    roots: [{ path: '/project/primary', role: 'primary' }],
   }
 
   const instructions = projectInstructions(project, 'full')

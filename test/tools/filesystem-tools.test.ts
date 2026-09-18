@@ -7,11 +7,11 @@ import test from 'node:test'
 
 import type { AgentProject } from '../../src/projects/project.ts'
 import type { Tool } from '../../src/runtime/types.ts'
-import { createWorkspaceTools } from '../../src/tools/workspace-tools.ts'
+import { createFilesystemTools } from '../../src/tools/filesystem-tools.ts'
 
 test('exposes Read, Edit, Write, Glob, and Grep for one Project', async t => {
   const fixture = await createFixture(t)
-  const tools = createWorkspaceTools(fixture.project)
+  const tools = createFilesystemTools(fixture.project)
 
   assert.deepEqual(tools.map(tool => tool.description.name), ['Read', 'Edit', 'Write', 'Glob', 'Grep'])
   const read = tools[0]
@@ -79,7 +79,7 @@ test('Edit rejects traversal, escaping symlinks, binary files, and unregistered 
   await writeFile(outsideFile, 'secret')
   await symlink(outsideFile, join(fixture.primary, 'escape.txt'))
   await writeFile(join(fixture.primary, 'binary.dat'), Buffer.from([0, 1, 2]))
-  const edit = createWorkspaceTools(fixture.project, 'scoped').find(
+  const edit = createFilesystemTools(fixture.project, 'scoped').find(
     candidate => candidate.description.name === 'Edit',
   )
   assert.ok(edit)
@@ -98,7 +98,7 @@ test('Edit rejects traversal, escaping symlinks, binary files, and unregistered 
   )
   await assert.rejects(
     edit.execute({ root: fixture.outside, path: 'secret.txt', oldText: 'secret', newText: 'changed' }),
-    /Unknown Workspace Root/,
+    /Unknown Project Root/,
   )
   assert.equal(await readFile(outsideFile, 'utf8'), 'secret')
 })
@@ -163,7 +163,7 @@ test('Write never overwrites an existing file or symbolic link', async t => {
 test('Write rejects traversal, missing or escaping parents, oversized content, and unregistered roots in scoped mode', async t => {
   const fixture = await createFixture(t)
   await symlink(fixture.outside, join(fixture.primary, 'escape'))
-  const write = createWorkspaceTools(fixture.project, 'scoped').find(
+  const write = createFilesystemTools(fixture.project, 'scoped').find(
     candidate => candidate.description.name === 'Write',
   )
   assert.ok(write)
@@ -186,7 +186,7 @@ test('Write rejects traversal, missing or escaping parents, oversized content, a
   )
   await assert.rejects(
     write.execute({ root: fixture.outside, path: 'new.txt', content: 'new' }),
-    /Unknown Workspace Root/,
+    /Unknown Project Root/,
   )
 })
 
@@ -194,7 +194,7 @@ test('full access allows Edit and Write in an unregistered absolute directory', 
   const fixture = await createFixture(t)
   const existingPath = join(fixture.outside, 'existing.txt')
   await writeFile(existingPath, 'before\n')
-  const tools = createWorkspaceTools(fixture.project, 'full')
+  const tools = createFilesystemTools(fixture.project, 'full')
   const edit = requireNamedTool(tools, 'Edit')
   const write = requireNamedTool(tools, 'Write')
 
@@ -248,13 +248,13 @@ test('Read rejects traversal and symlinks that escape the selected root', async 
 
   await assert.rejects(read.execute({ path: '../outside/secret.txt' }), /parent traversal/)
   await assert.rejects(read.execute({ path: 'escape.txt' }), /escapes its selected root/)
-  await assert.rejects(read.execute({ root: fixture.outside, path: 'secret.txt' }), /Unknown Workspace Root/)
+  await assert.rejects(read.execute({ root: fixture.outside, path: 'secret.txt' }), /Unknown Project Root/)
 })
 
 test('full access can select an unregistered absolute directory', async t => {
   const fixture = await createFixture(t)
   await writeFile(join(fixture.outside, 'note.txt'), 'outside content\n')
-  const read = createWorkspaceTools(fixture.project, 'full').find(
+  const read = createFilesystemTools(fixture.project, 'full').find(
     candidate => candidate.description.name === 'Read',
   )
   assert.ok(read)
@@ -323,7 +323,7 @@ test('Grep reports invalid regular expressions as tool errors', async t => {
 })
 
 function requireTool(project: AgentProject, name: string): Tool {
-  return requireNamedTool(createWorkspaceTools(project), name)
+  return requireNamedTool(createFilesystemTools(project), name)
 }
 
 function requireNamedTool(tools: readonly Tool[], name: string): Tool {
@@ -346,7 +346,7 @@ async function createFixture(t: test.TestContext): Promise<{
   attached: string
   outside: string
 }> {
-  const directory = await realpath(await mkdtemp(join(tmpdir(), 'ai-agent-workspace-')))
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'ai-agent-project-')))
   t.after(async () => await rm(directory, { recursive: true, force: true }))
   const primary = join(directory, 'primary')
   const attached = join(directory, 'attached')
@@ -355,7 +355,7 @@ async function createFixture(t: test.TestContext): Promise<{
   return {
     project: {
       id: 'project-1',
-      name: 'workspace',
+      name: 'project',
       roots: [
         { path: primary, role: 'primary' },
         { path: attached, role: 'attached' },

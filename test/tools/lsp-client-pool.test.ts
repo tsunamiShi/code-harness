@@ -6,7 +6,7 @@ import {
   type PooledLspClient,
 } from '../../src/tools/lsp-client-pool.ts'
 
-test('reuses one healthy LSP client for repeated queries in the same workspace', async () => {
+test('reuses one healthy LSP client for repeated queries in the same project', async () => {
   const created: FakeClient[] = []
   const pool = new LspClientPool<string, string>(() => {
     const client = new FakeClient()
@@ -14,16 +14,16 @@ test('reuses one healthy LSP client for repeated queries in the same workspace',
     return client
   })
 
-  assert.equal(await pool.query('/workspace::vue', 'definition'), 'definition')
-  assert.equal(await pool.query('/workspace::vue', 'hover'), 'hover')
+  assert.equal(await pool.query('/project::vue', 'definition'), 'definition')
+  assert.equal(await pool.query('/project::vue', 'hover'), 'hover')
   assert.equal(created.length, 1)
 
   await pool.close()
   assert.equal(created[0]?.closeCount, 1)
-  await assert.rejects(pool.query('/workspace::vue', 'hover'), /pool is closed/)
+  await assert.rejects(pool.query('/project::vue', 'hover'), /pool is closed/)
 })
 
-test('evicts the least recently used client when the workspace limit is reached', async () => {
+test('evicts the least recently used client when the project limit is reached', async () => {
   const clients = new Map<string, FakeClient>()
   const pool = new LspClientPool<string, string>(key => {
     const client = new FakeClient()
@@ -50,7 +50,7 @@ test('recreates one unhealthy LSP client and retries a read-only query once', as
     return client
   })
 
-  assert.equal(await pool.query('workspace', 'definition'), 'definition')
+  assert.equal(await pool.query('project', 'definition'), 'definition')
   assert.equal(created.length, 2)
   assert.equal(created[0]?.closeCount, 1)
   await pool.close()
