@@ -66,6 +66,7 @@ test('LSP resolves a TypeScript definition through the language-server protocol'
     "import { greet } from './definition.ts'\ngreet('Agent')\n",
   )
   const lsp = requireTool(createCodeTools(fixture.project), 'LSP')
+  t.after(async () => await lsp.close?.())
 
   const result = await executeJson(lsp, {
     operation: 'definition',
@@ -102,6 +103,85 @@ test('LSP resolves a TypeScript definition through the language-server protocol'
     column: 2,
   })
   assert.match(JSON.stringify(hover.hover), /greet/)
+})
+
+test('LSP routes Vue files through Vue Language Server', async t => {
+  const fixture = await createFixture(t)
+  await writeFile(join(fixture.primary, 'tsconfig.json'), JSON.stringify({
+    compilerOptions: { strict: true },
+    include: ['*.vue'],
+  }))
+  await writeFile(
+    join(fixture.primary, 'Example.vue'),
+    [
+      '<script setup lang="ts">',
+      'function format(value: string): string { return value.toUpperCase() }',
+      "const message = format('hello')",
+      '</script>',
+      '<template><p>{{ message }}</p></template>',
+      '',
+    ].join('\n'),
+  )
+  const lsp = requireTool(createCodeTools(fixture.project), 'LSP')
+  t.after(async () => await lsp.close?.())
+
+  const result = await executeJson(lsp, {
+    operation: 'definition',
+    path: 'Example.vue',
+    line: 3,
+    column: 18,
+  })
+
+  assert.equal(result.languageServer, 'vue-language-server')
+  assert.deepEqual(result.locations, [
+    {
+      path: 'Example.vue',
+      start: { line: 2, column: 10 },
+      end: { line: 2, column: 16 },
+    },
+  ])
+
+  const references = await executeJson(lsp, {
+    operation: 'references',
+    path: 'Example.vue',
+    line: 2,
+    column: 11,
+  })
+  assert.ok(Array.isArray(references.locations))
+  assert.ok(references.locations.length >= 2)
+
+  const hover = await executeJson(lsp, {
+    operation: 'hover',
+    path: 'Example.vue',
+    line: 3,
+    column: 18,
+  })
+  assert.match(JSON.stringify(hover.hover), /format/)
+
+  await writeFile(
+    join(fixture.primary, 'Example.vue'),
+    [
+      '<script setup lang="ts">',
+      'function formatValue(value: string): string { return value.toUpperCase() }',
+      "const message = formatValue('hello')",
+      '</script>',
+      '<template><p>{{ message }}</p></template>',
+      '',
+    ].join('\n'),
+  )
+  const changedDefinition = await executeJson(lsp, {
+    operation: 'definition',
+    path: 'Example.vue',
+    line: 3,
+    column: 18,
+  })
+  assert.deepEqual(changedDefinition.locations, [
+    {
+      path: 'Example.vue',
+      start: { line: 2, column: 10 },
+      end: { line: 2, column: 21 },
+    },
+  ])
 })
 
 function requireTool(tools: readonly Tool[], name: string): Tool {

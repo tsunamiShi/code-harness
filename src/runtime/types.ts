@@ -37,4 +37,5 @@ export interface Tool {
   readonly description: ToolDescription
   readonly parallelSafe?: boolean
   execute(arguments_: unknown): Promise<string>
+  close?(): Promise<void>
 }

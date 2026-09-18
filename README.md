@@ -40,7 +40,7 @@ CLI 在 Scoped 模式暴露六个代码工具：
 - `Read`：读取一个 UTF-8 文本文件的指定行范围。
 - `Edit`：在已有 UTF-8 文件中精确替换唯一一处文本。
 - `Write`：创建一个此前不存在的 UTF-8 文件。
-- `LSP`：查询 TypeScript/JavaScript 的源码定义、引用和 Hover 类型信息。
+- `LSP`：查询 Vue/TypeScript/JavaScript 的源码定义、引用和 Hover 类型信息。
 
 前五个 Workspace Tools 默认使用 Project 的 Primary Root；`root` 参数可以选择一个 Attached Root。所有路径都必须相对于所选 Root，运行时会检查规范路径和符号链接的真实目标。结果包含固定上限和截断标记，Tool Error 会写入 Step 并返回模型修正，而不是直接结束 Turn。
 
@@ -48,7 +48,9 @@ CLI 在 Scoped 模式暴露六个代码工具：
 
 `Write` 接收最多 64,000 字符的完整内容，只创建新文件，不覆盖任何已有文件或符号链接，也不自动创建父目录。它先完成同目录临时文件，再以排他方式发布目标，并返回字符数、字节数和 SHA-256，而不重复返回完整内容。
 
-`LSP` 通过标准 JSON-RPC 启动真实的 `typescript-language-server`，当前支持 `definition / references / hover`。模型使用从 1 开始的行列号，Runtime 将协议结果归一化为 Root 相对路径，并过滤所选 Root 之外的位置。每次调用启动独立 Server 进程，避免跨 Session 生命周期泄漏；后续出现明显启动成本时再演进为可回收的持久 Language Server。
+`LSP` 当前支持 `definition / references / hover`，并按文件类型选择语言服务：TypeScript/JavaScript 使用 `typescript-language-server`，Vue SFC 使用 `@vue/language-server` 与 `@vue/typescript-plugin` 组成的复合适配器。Vue Language Server 负责 SFC 文档服务及其自定义协议，Vue TypeScript Plugin 通过 `tsserver` 提供 `<script>` 内的 TypeScript 语义。这个差异被封装在同一个模型可见工具后面，避免为每种语言增加一套工具。
+
+模型统一使用从 1 开始的行列号，Runtime 将不同协议结果归一化为 Root 相对路径，并过滤所选 Root 之外的位置。同一个 CLI 进程按 Workspace Root 和语言 Provider 复用 Language Server；查询前通过 `didOpen / didChange` 同步当前文件，单个客户端内串行执行协议请求。客户端池最多保留四组进程，使用 LRU 回收较旧的 Root；CLI 退出时通过 Tool 的 `close()` 生命周期钩子关闭全部子进程。进程意外退出后，下一次只读查询会重建客户端并重试一次。
 
 Full Access 模式额外暴露 `Bash`。它以选定 Root 或其相对子目录为 `cwd`，返回退出码、信号、stdout、stderr、超时和截断信息；非零退出属于可供模型修正的执行结果。当前默认超时 30 秒、最大 120 秒，stdout/stderr 各最多返回 64,000 字符。
 
@@ -150,6 +152,7 @@ Reasoning Content 只来自供应商响应的 `reasoning_content` 字段。并�
 - [ADR-011: Write creates new Project files without overwriting](docs/decisions/011-write-creates-new-project-files.md)
 - [ADR-012: Full access authorizes all Workspace Tools](docs/decisions/012-full-access-authorizes-all-workspace-tools.md)
 - [ADR-013: Unsandboxed Bash requires full access](docs/decisions/013-unsandboxed-bash-requires-full-access.md)
+- [ADR-014: Reuse language servers within the CLI process](docs/decisions/014-reuse-language-servers-within-cli-process.md)
 
 ## 当前限制
 
@@ -157,7 +160,7 @@ Reasoning Content 只来自供应商响应的 `reasoning_content` 字段。并�
 - 当前 `Edit / Write` 只支持修改或创建文本文件；尚未加入文件删除。
 - Edit / Write 当前没有交互式 Approval；Full Access 会显式扩大其写入范围。
 - Bash 尚无 OS sandbox、Approval、交互式 stdin 和持久终端；只能在 Full Access 下执行一次性命令。
-- LSP 当前只支持 TypeScript/JavaScript，且每次查询都会启动新的 Language Server 进程。
+- LSP 当前只支持 Vue/TypeScript/JavaScript；首次查询仍有 Language Server 冷启动成本，Vue Provider 还需要额外启动启用 Vue 插件的 `tsserver`。
 - Project 支持追加 Attached Root，但尚未支持移除 Root、更换 Primary Root 和运行时热更新。
 - 异常退出可能留下 `running` Turn；尚未实现租约和自动恢复。
 - 工具副作用与结果入库不是一个原子事务；自动重试前需要幂等键或 outbox。

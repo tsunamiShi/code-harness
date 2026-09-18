@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { readFile, realpath } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
@@ -13,33 +13,42 @@ import {
 
 import type { AgentProject, ProjectRoot, WorkspaceAccessMode } from '../projects/project.ts'
 import type { Tool } from '../runtime/types.ts'
+import { LspClientPool, type PooledLspClient } from './lsp-client-pool.ts'
 import {
   resolveExistingWorkspacePath,
   selectWorkspaceRoot,
   workspaceRootProperty,
 } from './workspace-tools.ts'
+import { VueTsServerBridge } from './vue-tsserver-bridge.ts'
 
 const LSP_TIMEOUT_MS = 15_000
 const MAX_LOCATIONS = 200
 const MAX_HOVER_CHARACTERS = 16_000
 const TYPESCRIPT_EXTENSIONS = new Set(['js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx', 'mts', 'cts'])
 const require = createRequire(import.meta.url)
-const languageServerPackage = require.resolve('typescript-language-server/package.json')
-const languageServerCli = resolve(dirname(languageServerPackage), 'lib/cli.mjs')
+const typescriptLanguageServerPackage = require.resolve('typescript-language-server/package.json')
+const typescriptLanguageServerCli = resolve(dirname(typescriptLanguageServerPackage), 'lib/cli.mjs')
+const vueLanguageServerPackage = require.resolve('@vue/language-server/package.json')
+const vueLanguageServerCli = resolve(dirname(vueLanguageServerPackage), 'bin/vue-language-server.js')
+const typescriptPackage = require.resolve('typescript/package.json')
+const typescriptSdk = resolve(dirname(typescriptPackage), 'lib')
 
 type LspOperation = 'definition' | 'references' | 'hover'
 
-/** Creates read-only TypeScript language intelligence backed by a real LSP server. */
+/** Creates read-only Vue, TypeScript, and JavaScript intelligence backed by real LSP servers. */
 export function createLspTool(
   project: AgentProject,
   accessMode: WorkspaceAccessMode,
 ): Tool {
+  const clients = new LspClientPool<LanguageServerQuery, Record<string, unknown>>(
+    (_key, input) => new LanguageServerClient(input.root, input.languageServer),
+  )
   return {
     parallelSafe: false,
     description: {
       name: 'LSP',
       description:
-        'Query TypeScript or JavaScript language intelligence. Use one-based line and column positions for definition, references, or hover information.',
+        'Query Vue, TypeScript, or JavaScript language intelligence. Use one-based line and column positions for definition, references, or hover information.',
       parameters: {
         type: 'object',
         properties: {
@@ -51,7 +60,7 @@ export function createLspTool(
           },
           path: {
             type: 'string',
-            description: 'TypeScript or JavaScript file relative to the selected root.',
+            description: 'Vue, TypeScript, or JavaScript file relative to the selected root.',
           },
           line: {
             type: 'integer',
@@ -76,18 +85,23 @@ export function createLspTool(
       const column = requiredInteger(input, 'column')
       const root = await selectWorkspaceRoot(project, accessMode, optionalString(input, 'root'))
       const target = await resolveExistingWorkspacePath(root, inputPath, 'file')
-      const languageId = languageIdFor(inputPath)
+      const languageServer = languageServerFor(inputPath)
       const content = await readFile(target.actualPath, 'utf8')
-      return JSON.stringify(await queryLanguageServer({
+      const query = {
         root,
         operation,
         targetPath: target.actualPath,
         displayPath: target.displayPath,
-        languageId,
+        languageServer,
         content,
         line,
         column,
-      }))
+      }
+      const key = `${root.path}\0${languageServer.name}`
+      return JSON.stringify(await clients.query(key, query))
+    },
+    async close() {
+      await clients.close()
     },
   }
 }
@@ -97,110 +111,223 @@ interface LanguageServerQuery {
   operation: LspOperation
   targetPath: string
   displayPath: string
-  languageId: string
+  languageServer: LanguageServerAdapter
   content: string
   line: number
   column: number
 }
 
-async function queryLanguageServer(input: LanguageServerQuery): Promise<Record<string, unknown>> {
-  const child = spawn(process.execPath, [languageServerCli, '--stdio'], {
-    cwd: input.root.path,
-    env: process.env,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  })
-  if (!child.stdin || !child.stdout || !child.stderr) {
-    child.kill()
-    throw new Error('LSP server did not expose stdio streams')
-  }
-  child.stderr.setEncoding('utf8')
-  let stderr = ''
-  child.stderr.on('data', chunk => {
-    if (stderr.length < 8_000) stderr += String(chunk)
-  })
-  const connection = createMessageConnection(
-    new StreamMessageReader(child.stdout),
-    new StreamMessageWriter(child.stdin),
-  )
-  connection.listen()
+interface LanguageServerAdapter {
+  name: 'typescript-language-server' | 'vue-language-server'
+  cliPath: string
+  arguments: readonly string[]
+  languageId: string
+  sourceDefinitionCommand?: string
+}
 
-  try {
-    await withTimeout(connection.sendRequest('initialize', {
-      processId: process.pid,
-      clientInfo: { name: 'ai-agent', version: '0.1.0' },
-      rootUri: pathToFileURL(input.root.path).href,
-      workspaceFolders: [{ uri: pathToFileURL(input.root.path).href, name: 'workspace' }],
-      capabilities: {
-        workspace: { workspaceFolders: true },
-        textDocument: {
-          definition: {},
-          references: {},
-          hover: { contentFormat: ['markdown', 'plaintext'] },
-        },
-      },
-    }), 'initialize')
-    connection.sendNotification('initialized', {})
-    const uri = pathToFileURL(input.targetPath).href
-    connection.sendNotification('textDocument/didOpen', {
-      textDocument: {
-        uri,
-        languageId: input.languageId,
-        version: 1,
-        text: input.content,
-      },
-    })
+class LanguageServerClient implements PooledLspClient<LanguageServerQuery, Record<string, unknown>> {
+  private child: ChildProcessWithoutNullStreams | undefined
+  private connection: MessageConnection | undefined
+  private vueTsServer: VueTsServerBridge | undefined
+  private readonly documents = new Map<string, { content: string; version: number }>()
+  private tail: Promise<void> = Promise.resolve()
+  private stderr = ''
+  private bridgeError: Error | undefined
+  private closing = false
+  private active = true
+
+  constructor(
+    private readonly root: ProjectRoot,
+    private readonly languageServer: LanguageServerAdapter,
+  ) {}
+
+  get healthy(): boolean {
+    return this.active && (this.vueTsServer?.healthy ?? true)
+  }
+
+  async query(input: LanguageServerQuery): Promise<Record<string, unknown>> {
+    const result = this.tail.then(async () => await this.querySerial(input))
+    this.tail = result.then(() => undefined, () => undefined)
+    return await result
+  }
+
+  async close(): Promise<void> {
+    this.closing = true
+    await this.tail
+    const graceful = this.healthy
+    const connection = this.connection
+    const child = this.child
+    this.connection = undefined
+    this.child = undefined
+    this.active = false
+    if (connection && graceful) await shutdownLanguageServer(connection)
+    else connection?.dispose()
+    this.vueTsServer?.close()
+    this.vueTsServer = undefined
+    if (child && child.exitCode === null && child.signalCode === null) child.kill()
+  }
+
+  private async querySerial(input: LanguageServerQuery): Promise<Record<string, unknown>> {
+    const connection = await this.start()
+    await this.syncDocument(connection, input)
     const position = { line: input.line - 1, character: input.column - 1 }
+    const uri = pathToFileURL(input.targetPath).href
     const textDocumentPosition = { textDocument: { uri }, position }
-    let result = await withTimeout(
-      input.operation === 'references'
-        ? connection.sendRequest('textDocument/references', {
-            textDocument: { uri },
-            position,
-            context: { includeDeclaration: true },
-          })
-        : input.operation === 'definition'
-          ? connection.sendRequest('workspace/executeCommand', {
-              command: '_typescript.goToSourceDefinition',
-              arguments: [uri, position],
+    try {
+      let result = await withTimeout(
+        input.operation === 'references'
+          ? connection.sendRequest('textDocument/references', {
+              textDocument: { uri },
+              position,
+              context: { includeDeclaration: true },
             })
-          : connection.sendRequest('textDocument/hover', textDocumentPosition),
-      input.operation,
-    )
-    if (input.operation === 'definition' && (result === null || result === undefined)) {
-      result = await withTimeout(
-        connection.sendRequest('textDocument/definition', textDocumentPosition),
+          : input.operation === 'definition' && this.languageServer.sourceDefinitionCommand
+            ? connection.sendRequest('workspace/executeCommand', {
+                command: this.languageServer.sourceDefinitionCommand,
+                arguments: [uri, position],
+              })
+            : connection.sendRequest(
+                input.operation === 'definition' ? 'textDocument/definition' : 'textDocument/hover',
+                textDocumentPosition,
+              ),
         input.operation,
       )
-    }
+      if (input.operation === 'definition' && (result === null || result === undefined)) {
+        result = await withTimeout(
+          connection.sendRequest('textDocument/definition', textDocumentPosition),
+          input.operation,
+        )
+      }
+      if (this.bridgeError) throw this.bridgeError
+      if (this.vueTsServer && lacksResult(input.operation, result)) {
+        result = await this.vueTsServer.query(
+          input.operation,
+          input.targetPath,
+          input.line,
+          input.column,
+        )
+      }
 
-    if (input.operation === 'hover') {
+      if (input.operation === 'hover') {
+        return {
+          root: input.root.path,
+          languageServer: input.languageServer.name,
+          operation: input.operation,
+          path: input.displayPath,
+          position: { line: input.line, column: input.column },
+          hover: normalizeHover(result),
+        }
+      }
+      const locations = await normalizeLocations(input.root.path, result)
       return {
         root: input.root.path,
+        languageServer: input.languageServer.name,
         operation: input.operation,
         path: input.displayPath,
         position: { line: input.line, column: input.column },
-        hover: normalizeHover(result),
+        locations: locations.slice(0, MAX_LOCATIONS),
+        truncated: locations.length > MAX_LOCATIONS,
       }
+    } catch (error: unknown) {
+      const details = this.stderr.trim()
+      throw new Error(
+        `LSP ${input.operation} failed: ${errorMessage(error)}${details ? `; server: ${details}` : ''}`,
+        { cause: error },
+      )
     }
-    const locations = await normalizeLocations(input.root.path, result)
-    return {
-      root: input.root.path,
-      operation: input.operation,
-      path: input.displayPath,
-      position: { line: input.line, column: input.column },
-      locations: locations.slice(0, MAX_LOCATIONS),
-      truncated: locations.length > MAX_LOCATIONS,
-    }
-  } catch (error: unknown) {
-    const details = stderr.trim()
-    throw new Error(
-      `LSP ${input.operation} failed: ${errorMessage(error)}${details ? `; server: ${details}` : ''}`,
-      { cause: error },
-    )
-  } finally {
-    await shutdownLanguageServer(connection)
-    if (child.exitCode === null && child.signalCode === null) child.kill()
   }
+
+  private async start(): Promise<MessageConnection> {
+    if (this.connection) return this.connection
+    const child = spawn(
+      process.execPath,
+      [this.languageServer.cliPath, ...this.languageServer.arguments],
+      { cwd: this.root.path, env: process.env, stdio: ['pipe', 'pipe', 'pipe'] },
+    )
+    this.child = child
+    child.once('error', () => {
+      if (!this.closing) this.active = false
+    })
+    child.once('exit', () => {
+      if (!this.closing) this.active = false
+    })
+    child.stderr.setEncoding('utf8')
+    child.stderr.on('data', chunk => {
+      if (this.stderr.length < 8_000) this.stderr += String(chunk)
+    })
+    const connection = createMessageConnection(
+      new StreamMessageReader(child.stdout),
+      new StreamMessageWriter(child.stdin),
+    )
+    this.connection = connection
+    if (this.languageServer.name === 'vue-language-server') {
+      this.vueTsServer = new VueTsServerBridge(this.root.path)
+      connection.onNotification('tsserver/request', async value => {
+        if (!Array.isArray(value) || typeof value[0] !== 'number') return
+        try {
+          const response = await this.vueTsServer!.request(String(value[1]), value[2])
+          connection.sendNotification('tsserver/response', [value[0], response])
+        } catch (error: unknown) {
+          this.bridgeError = error instanceof Error ? error : new Error(String(error))
+          connection.sendNotification('tsserver/response', [value[0], null])
+        }
+      })
+    }
+    connection.listen()
+    try {
+      await withTimeout(connection.sendRequest('initialize', {
+        processId: process.pid,
+        clientInfo: { name: 'ai-agent', version: '0.1.0' },
+        rootUri: pathToFileURL(this.root.path).href,
+        workspaceFolders: [{ uri: pathToFileURL(this.root.path).href, name: 'workspace' }],
+        capabilities: {
+          workspace: { workspaceFolders: true },
+          textDocument: {
+            definition: {},
+            references: {},
+            hover: { contentFormat: ['markdown', 'plaintext'] },
+          },
+        },
+      }), 'initialize')
+      await connection.sendNotification('initialized', {})
+      return connection
+    } catch (error: unknown) {
+      this.active = false
+      throw error
+    }
+  }
+
+  private async syncDocument(
+    connection: MessageConnection,
+    input: LanguageServerQuery,
+  ): Promise<void> {
+    const previous = this.documents.get(input.targetPath)
+    if (previous?.content === input.content) return
+    await this.vueTsServer?.syncDocument(input.targetPath, input.content)
+    const uri = pathToFileURL(input.targetPath).href
+    if (!previous) {
+      this.documents.set(input.targetPath, { content: input.content, version: 1 })
+      await connection.sendNotification('textDocument/didOpen', {
+        textDocument: {
+          uri,
+          languageId: this.languageServer.languageId,
+          version: 1,
+          text: input.content,
+        },
+      })
+      return
+    }
+    const version = previous.version + 1
+    this.documents.set(input.targetPath, { content: input.content, version })
+    await connection.sendNotification('textDocument/didChange', {
+      textDocument: { uri, version },
+      contentChanges: [{ text: input.content }],
+    })
+  }
+}
+
+function lacksResult(operation: LspOperation, value: unknown): boolean {
+  return operation === 'hover' ? value === null || value === undefined : !Array.isArray(value) || value.length === 0
 }
 
 async function shutdownLanguageServer(connection: MessageConnection): Promise<void> {
@@ -313,15 +440,32 @@ async function withTimeout<T>(
   }
 }
 
-function languageIdFor(path: string): string {
+function languageServerFor(path: string): LanguageServerAdapter {
   const extension = path.split('.').at(-1)?.toLowerCase()
-  if (!extension || !TYPESCRIPT_EXTENSIONS.has(extension)) {
-    throw new Error(`LSP supports TypeScript and JavaScript files only: ${path}`)
+  if (extension === 'vue') {
+    return {
+      name: 'vue-language-server',
+      cliPath: vueLanguageServerCli,
+      arguments: ['--stdio', `--tsdk=${typescriptSdk}`],
+      languageId: 'vue',
+    }
   }
-  if (extension === 'ts' || extension === 'mts' || extension === 'cts') return 'typescript'
-  if (extension === 'tsx') return 'typescriptreact'
-  if (extension === 'jsx') return 'javascriptreact'
-  return 'javascript'
+  if (!extension || !TYPESCRIPT_EXTENSIONS.has(extension)) {
+    throw new Error(`LSP supports Vue, TypeScript, and JavaScript files only: ${path}`)
+  }
+  return {
+    name: 'typescript-language-server',
+    cliPath: typescriptLanguageServerCli,
+    arguments: ['--stdio'],
+    languageId: extension === 'ts' || extension === 'mts' || extension === 'cts'
+      ? 'typescript'
+      : extension === 'tsx'
+        ? 'typescriptreact'
+        : extension === 'jsx'
+          ? 'javascriptreact'
+          : 'javascript',
+    sourceDefinitionCommand: '_typescript.goToSourceDefinition',
+  }
 }
 
 function readArguments(value: unknown): Record<string, unknown> {

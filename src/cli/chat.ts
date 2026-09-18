@@ -20,13 +20,14 @@ const target = readChatTarget(process.argv.slice(2))
 const project = target.kind === 'project'
   ? await catalog.get(target.id)
   : await projectForSession(target.id)
+const tools = createCodeTools(project, target.accessMode)
 const sessionOptions = {
   model: new OpenAICompatibleChatModel({
     apiKey: requiredEnvironment('DASHSCOPE_API_KEY'),
     baseURL: requiredEnvironment('DASHSCOPE_BASE_URL'),
     model: requiredEnvironment('DASHSCOPE_MODEL'),
   }),
-  tools: createCodeTools(project, target.accessMode),
+  tools,
   store,
   project,
   accessMode: target.accessMode,
@@ -61,7 +62,11 @@ try {
   }
 } finally {
   terminal.close()
-  await store.close()
+  try {
+    await Promise.all(tools.map(async tool => await tool.close?.()))
+  } finally {
+    await store.close()
+  }
 }
 
 async function projectForSession(sessionId: string) {
