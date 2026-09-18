@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@types/marked-terminal": "6.1.1",
     "@types/node": "^24.0.0",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"
@@ -23,6 +24,8 @@
     "@vscode/ripgrep": "^1.18.0",
     "@vue/language-server": "^3.3.11",
     "@vue/typescript-plugin": "^3.3.11",
+    "marked": "15.0.12",
+    "marked-terminal": "7.3.0",
     "mysql2": "^3.24.4",
     "openai": "^7.15.0",
     "typescript-language-server": "^6.0.0",

@@ -60,7 +60,10 @@ test('renders model reasoning, tool arguments, result content, and turn summary'
 
 test('states when the provider returns no reasoning content', () => {
   const output: string[] = []
-  const trace = createConsoleTrace({ write: text => output.push(text) })
+  const trace = createConsoleTrace({
+    write: text => output.push(text),
+    renderMarkdown: source => `preview: ${source}`,
+  })
 
   trace({
     type: 'model.completed',
@@ -71,5 +74,5 @@ test('states when the provider returns no reasoning content', () => {
   })
 
   assert.match(output.join('\n'), /Provider reasoning: not returned/)
-  assert.match(output.join('\n'), /Final content\n│    done/)
+  assert.match(output.join('\n'), /Final content\n│    preview: done/)
 })

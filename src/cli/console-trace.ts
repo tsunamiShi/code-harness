@@ -6,6 +6,7 @@ export interface ConsoleTraceOptions {
   write: (text: string) => void
   colors?: boolean
   maxToolResultChars?: number
+  renderMarkdown?: (source: string) => string
 }
 
 /** Formats Agent runtime events as a readable terminal execution timeline. */
@@ -32,7 +33,11 @@ export function createConsoleTrace(options: ConsoleTraceOptions): (event: AgentE
           options.write(`│  ${color.dim('Provider reasoning: not returned')}`)
         }
         if (event.output.kind === 'final') {
-          options.write(block('Final content', event.output.content, color.green))
+          options.write(block(
+            'Final content',
+            options.renderMarkdown?.(event.output.content) ?? event.output.content,
+            value => value,
+          ))
         } else {
           if (event.output.content !== undefined) {
             options.write(block('Model content', event.output.content, color.green))

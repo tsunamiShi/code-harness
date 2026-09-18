@@ -8,6 +8,7 @@ import { MysqlAgentStore } from '../storage/mysql-agent-store.ts'
 import { createCodeTools } from '../tools/code-tools.ts'
 import { readChatTarget } from './chat-arguments.ts'
 import { createConsoleTrace } from './console-trace.ts'
+import { createMarkdownRenderer } from './markdown.ts'
 import {
   agentMaxStepsFromEnvironment,
   mysqlOptionsFromEnvironment,
@@ -35,6 +36,9 @@ const sessionOptions = {
   onEvent: createConsoleTrace({
     write: text => console.log(text),
     colors: stdout.isTTY && process.env.NO_COLOR === undefined,
+    renderMarkdown: createMarkdownRenderer({
+      width: Math.max(40, (stdout.columns ?? 100) - 8),
+    }),
   }),
 }
 const session = target.kind === 'session'
