@@ -81,6 +81,42 @@ test('full-access instructions allow arbitrary roots without changing the Projec
   assert.doesNotMatch(instructions, /Do not access paths outside/)
 })
 
+test('instructions require dedicated code tools instead of Bash equivalents', () => {
+  const project: AgentProject = {
+    id: 'project-1',
+    name: 'project',
+    roots: [{ path: '/project/primary', role: 'primary' }],
+  }
+
+  const instructions = projectInstructions(project, 'full')
+
+  assert.match(instructions, /Available code tools:/)
+  assert.match(instructions, /Read: read a bounded line range/)
+  assert.match(instructions, /Glob: discover files/)
+  assert.match(instructions, /Grep: search file contents/)
+  assert.match(instructions, /LSP: query definitions, references/)
+  assert.match(instructions, /Edit: replace one exact, unique text occurrence/)
+  assert.match(instructions, /Write: create a new file/)
+  assert.match(instructions, /Use Read instead of Bash commands such as cat, sed, head, or tail/)
+  assert.match(instructions, /Use Glob instead of Bash commands such as ls or find/)
+  assert.match(instructions, /Use Grep instead of Bash commands such as grep or rg/)
+  assert.match(instructions, /Do not use Bash for reading, discovering, searching, or editing/)
+  assert.match(instructions, /request them together in one tool-call batch/)
+})
+
+test('scoped instructions omit unavailable Bash guidance', () => {
+  const project: AgentProject = {
+    id: 'project-1',
+    name: 'project',
+    roots: [{ path: '/project/primary', role: 'primary' }],
+  }
+
+  const instructions = projectInstructions(project)
+
+  assert.match(instructions, /Filesystem access mode: scoped/)
+  assert.doesNotMatch(instructions, /Bash: run builds/)
+})
+
 class RecordingProjectStore implements ProjectStore {
   private project: AgentProject | undefined
 

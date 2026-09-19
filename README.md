@@ -117,6 +117,8 @@ pnpm chat -- --session <session-id> --full-access
 
 Full Access 还会启用 `Bash`。`cwd` 不是安全边界：Shell 命令可以使用绝对路径或自行切换目录，因此在没有 OS sandbox 的阶段，Scoped 模式不会向模型提供 Bash。
 
+System Prompt 会说明每个 Code Tool 的职责，并要求模型优先使用专用工具：文件读取使用 `Read`，文件发现使用 `Glob`，内容搜索使用 `Grep`，语义查询使用 `LSP`，文件修改使用 `Edit / Write`。即使 Full Access 提供了 `Bash`，也只应用于 Git、测试、构建、包管理器和没有专用 Tool 的命令，不应用 Shell 命令重复实现已有文件工具。
+
 CLI 会显示 Primary Root 和新 Session ID。正常退出后可以恢复：
 
 ```sh
