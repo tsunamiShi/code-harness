@@ -4,6 +4,8 @@
 
 Accepted
 
+The Step-budget and failed-Turn rollback decisions are superseded by [ADR-017](017-unbounded-agent-loop-and-turn-recovery.md).
+
 ## Date
 
 2026-09-17
@@ -16,11 +18,11 @@ Multi-turn conversation requires one owner for message ordering, per-turn execut
 
 ## Decision
 
-Introduce `AgentSession` as the in-memory owner of one conversation. `send(prompt)` executes one turn and retains its completed user and assistant messages for later turns. The step limit resets for each turn.
+Introduce `AgentSession` as the in-memory owner of one conversation. `send(prompt)` executes one turn and retains its completed user and assistant messages for later turns.
 
 Only one `send()` may run at a time on a session. Concurrent calls fail rather than interleave messages nondeterministically.
 
-If a turn fails, its newly appended messages are rolled back. This preserves a valid model history while the message model cannot represent failed attempts. `runAgent()` remains as a one-turn compatibility wrapper around a disposable session.
+The original implementation rolled back messages when a Turn failed. ADR-017 replaces that behavior with durable continuation of the same Turn. `runAgent()` remains as a one-turn compatibility wrapper around a disposable session.
 
 ## Alternatives Considered
 
@@ -40,6 +42,6 @@ Implicit queuing makes cancellation and user steering ambiguous. The first inter
 
 - Follow-up prompts see every completed prior turn.
 - One session is sequential even when multiple sessions run concurrently.
-- Failed turn details are not retained yet.
+- Failed Turn recovery is defined by ADR-017.
 - Long conversations will eventually exceed model context and require context management.
 - Durable ownership and restart recovery are added by [ADR-002](002-mysql-persists-session-turns-and-steps.md).

@@ -113,6 +113,31 @@ export class MemorySessionStore implements SessionStore {
       step.status = 'completed'
     }
   }
+
+  async recoverTurn(
+    sessionId: string,
+    turnId: string,
+    interruptedToolError: string,
+  ): Promise<void> {
+    const session = this.sessions.get(sessionId)
+    if (!session) throw new Error(`Unknown session: ${sessionId}`)
+    const turn = requireTurn(session, turnId)
+    if (turn.status === 'completed') throw new Error(`Turn ${turn.id} is completed`)
+
+    turn.status = 'running'
+    delete turn.error
+    for (const step of turn.steps) {
+      if (step.output.kind !== 'tool-calls') continue
+      for (const execution of step.output.executions) {
+        if (execution.status !== 'running') continue
+        execution.status = 'failed'
+        execution.error = interruptedToolError
+      }
+      if (step.output.executions.every(execution => execution.status !== 'running')) {
+        step.status = 'completed'
+      }
+    }
+  }
 }
 
 interface MutableSession {

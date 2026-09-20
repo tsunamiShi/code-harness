@@ -11,7 +11,7 @@
 _Avoid_: Model、Assistant
 
 **Agent Loop**:
-Turn 内由模型推理、可选 Tool Call Batch 执行和结果反馈组成的迭代过程，直到得到最终答案、失败或达到 Step 上限。
+Turn 内由模型推理、可选 Tool Call Batch 执行和结果反馈组成的迭代过程，直到得到最终答案或遇到异常。Agent Loop 不按 Step 数量终止。
 _Avoid_: Session、Turn
 
 **Model**:
@@ -95,7 +95,7 @@ _Avoid_: Grep、Type Checker、Compiler
 _Avoid_: Conversation、Chat
 
 **Turn**:
-从一条用户输入开始，到 Agent 返回最终答案或失败为止的一次处理过程。
+从一条用户输入开始，到 Agent 返回最终答案为止的一次处理过程。异常会将 Turn 暂时标记为 failed，但恢复后仍继续同一个 Turn。
 _Avoid_: Round、Request
 
 **Step**:
@@ -103,7 +103,7 @@ Turn 内一次成功 Model Invocation 产生的模型决策；结果是最终答
 _Avoid_: Turn、Action
 
 **Message**:
-提供给模型的上下文条目。Message 是已完成 Turn 的投影，不等同于完整执行记录。
+提供给模型的上下文条目。Message 是已完成 Turn，以及最后一个可恢复 Turn 中已持久化 Steps 的投影，不等同于完整执行记录。
 _Avoid_: Event、Log
 
 ### Observability
@@ -111,6 +111,10 @@ _Avoid_: Event、Log
 **Model Invocation**:
 Runtime 请求 Model 产生下一个 Step 的一次逻辑调用。一次 Model Invocation 可能因重试产生多个 Provider Attempts，也可能失败而不产生 Step。
 _Avoid_: Provider Attempt、Step
+
+**Max Tokens**:
+一次 Model Invocation 最多允许模型生成的 Token 数。它不累计整个 Turn 或 Agent 任务的 Token 消耗，也不限制 Step 数量。
+_Avoid_: Turn Budget、Context Window
 
 **Provider Attempt**:
 Model Invocation 为获得响应而向模型供应商发起的一次实际请求；重试是同一 Model Invocation 下的新 Provider Attempt。

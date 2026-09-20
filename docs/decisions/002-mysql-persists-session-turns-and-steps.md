@@ -4,6 +4,8 @@
 
 Accepted
 
+The completed-Turn-only Message projection and deferred crash recovery are superseded by [ADR-017](017-unbounded-agent-loop-and-turn-recovery.md).
+
 ## Date
 
 2026-09-17
@@ -16,7 +18,7 @@ Persistence must retain completed and failed execution records without sending f
 
 ## Decision
 
-Persist the domain model in MySQL using `agent_sessions`, `agent_turns`, and `agent_steps`. A Step contains either a final model answer or a Tool Call Batch together with its execution results. Failed Turns and Steps remain queryable for diagnosis; only completed Turns are projected into model-visible Messages. ADR-015 adds durable Model Invocations and Provider Attempts without changing that Message projection.
+Persist the domain model in MySQL using `agent_sessions`, `agent_turns`, and `agent_steps`. A Step contains either a final model answer or a Tool Call Batch together with its execution results. Failed Turns and Steps remain queryable for diagnosis. The original implementation projected only completed Turns into model-visible Messages; ADR-017 extends the projection to durable work in the final recoverable Turn. ADR-015 adds durable Model Invocations and Provider Attempts.
 
 The Agent runtime depends on the small `SessionStore` interface. The MySQL Adapter owns SQL, migrations, transactions, and row validation. Starting a Turn locks its Session row before allocating the next Turn number, so concurrent writers cannot interleave two active Turns.
 
@@ -43,5 +45,5 @@ An append-only event log could reconstruct all state and support replay, but it 
 - CLI sessions can be resumed by ID after a normal process exit.
 - A database migration version is recorded independently of application releases.
 - Tests can use the in-memory Adapter through the same interface; a separate integration test verifies real MySQL behavior.
-- A process crash can leave a Turn in `running`; automatic lease expiry and recovery are deliberately deferred because safe recovery requires ownership and idempotency rules.
+- ADR-017 defines recovery for a final `running` or `failed` Turn without replaying Tool Calls whose side effects are unknown.
 - Tool execution and result persistence are not atomic. Side-effecting tools will require idempotency keys or an execution outbox before automatic retries are safe.

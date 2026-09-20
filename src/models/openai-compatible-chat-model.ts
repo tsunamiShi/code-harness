@@ -58,12 +58,14 @@ export class OpenAICompatibleChatModel implements Model {
   async generate(input: {
     messages: readonly Message[];
     tools: readonly ToolDescription[];
+    maxTokens: number;
     onAttempt?: (event: ModelAttemptEvent) => Promise<void>;
   }): Promise<ModelOutput> {
     const { data: completion, request_id: requestId } = await this.attemptContext.run(
       { nextAttempt: 0, ...(input.onAttempt === undefined ? {} : { onAttempt: input.onAttempt }) },
       async () => await this.client.chat.completions.create({
         model: this.options.model,
+        max_tokens: input.maxTokens,
         messages: input.messages.map(toProviderMessage),
         ...(input.tools.length === 0
           ? {}
@@ -100,6 +102,9 @@ export class OpenAICompatibleChatModel implements Model {
     const calls = message.tool_calls ?? [];
     const reasoningContent = readReasoningContent(message);
     const content = message.content ?? undefined;
+    if (completion.choices[0]?.finish_reason === "length") {
+      throw new Error(`Model response reached the ${input.maxTokens}-token output limit before completing`);
+    }
     if (calls.length > 0) {
       return {
         kind: "tool-calls",

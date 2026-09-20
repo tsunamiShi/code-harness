@@ -28,7 +28,7 @@ Expose exactly three model-visible filesystem perception Tools:
 
 Results use bounded JSON objects rather than unstructured terminal output. `Read` limits lines and characters, `Glob` limits candidates and returned files, and `Grep` limits matching lines and execution time. `Glob` uses the Node filesystem implementation. `Grep` runs the project-pinned ripgrep binary because its regular-expression engine, ignore handling, binary detection, and separate process are safer than evaluating model-provided JavaScript regular expressions in the Agent process.
 
-Tool execution errors are logged as failed Steps and returned to the model as Tool Messages. The Turn continues within its existing Step limit so the model can correct an invalid path, pattern, or argument. Restored model history includes these error results.
+Tool execution errors are logged and returned to the model as Tool Messages. The Turn continues so the model can correct an invalid path, pattern, or argument. Restored model history includes these error results.
 
 ## Alternatives Considered
 

@@ -107,13 +107,20 @@ test('emits an observable execution chain with provider reasoning and tool conte
   )
 })
 
-test('stops an agent that never produces a final answer', async () => {
+test('does not impose a Step limit and applies maxTokens to every model invocation', async () => {
+  let request = 0
+  const observedMaxTokens: number[] = []
   const model: Model = {
-    async generate() {
-      return {
-        kind: 'tool-calls' as const,
-        calls: [{ id: 'loop', name: 'search', arguments: {} }],
+    async generate(input) {
+      observedMaxTokens.push(input.maxTokens)
+      request += 1
+      if (request <= 51) {
+        return {
+          kind: 'tool-calls' as const,
+          calls: [{ id: `call-${request}`, name: 'search', arguments: {} }],
+        }
       }
+      return { kind: 'final', content: 'finished without a Step budget' }
     },
   }
   const search: Tool = {
@@ -127,13 +134,15 @@ test('stops an agent that never produces a final answer', async () => {
     },
   }
 
-  await assert.rejects(
-    runAgent({ model, tools: [search], prompt: 'loop', maxSteps: 2 }),
-    /2-step limit/,
+  assert.equal(
+    await runAgent({ model, tools: [search], prompt: 'long task', maxTokens: 4096 }),
+    'finished without a Step budget',
   )
+  assert.equal(request, 52)
+  assert.deepEqual(new Set(observedMaxTokens), new Set([4096]))
 })
 
-test('allows ten tool steps followed by a final answer with the default budget', async () => {
+test('allows ten tool steps followed by a final answer', async () => {
   let request = 0
   const model: Model = {
     async generate() {
@@ -159,32 +168,6 @@ test('allows ten tool steps followed by a final answer with the default budget',
     'done after exploration',
   )
   assert.equal(request, 11)
-})
-
-test('reserves the final available step for an answer without tools', async () => {
-  let request = 0
-  const model: Model = {
-    async generate(input) {
-      request += 1
-      if (input.tools.length === 0) return { kind: 'final', content: 'budget summary' }
-      return {
-        kind: 'tool-calls',
-        calls: [{ id: `call-${request}`, name: 'search', arguments: {} }],
-      }
-    },
-  }
-  const search: Tool = {
-    description: { name: 'search', description: 'Search.', parameters: {} },
-    async execute() {
-      return 'result'
-    },
-  }
-
-  assert.equal(
-    await runAgent({ model, tools: [search], prompt: 'explore', maxSteps: 3 }),
-    'budget summary',
-  )
-  assert.equal(request, 3)
 })
 
 test('executes a parallel-safe tool batch concurrently within one step', async () => {
@@ -244,6 +227,66 @@ test('executes a parallel-safe tool batch concurrently within one step', async (
   }
 })
 
+test('persists each parallel Tool result as soon as that call completes', async () => {
+  const inner = new MemorySessionStore()
+  const firstPersisted = Promise.withResolvers<void>()
+  const releaseSecond = Promise.withResolvers<void>()
+  const store: SessionStore = {
+    createSession: async projectId => await inner.createSession(projectId),
+    loadSession: async sessionId => await inner.loadSession(sessionId),
+    recoverTurn: async (sessionId, turnId, error) => {
+      await inner.recoverTurn(sessionId, turnId, error)
+    },
+    record: async (sessionId, record) => {
+      await inner.record(sessionId, record)
+      if (record.type === 'step.tool-completed' && record.toolCallId === 'call-fast') {
+        firstPersisted.resolve()
+      }
+    },
+  }
+  let request = 0
+  const session = await AgentSession.create({
+    model: {
+      async generate() {
+        request += 1
+        return request === 1
+          ? {
+              kind: 'tool-calls',
+              calls: [
+                { id: 'call-fast', name: 'Read', arguments: { path: 'fast' } },
+                { id: 'call-slow', name: 'Read', arguments: { path: 'slow' } },
+              ],
+            }
+          : { kind: 'final', content: 'done' }
+      },
+    },
+    tools: [{
+      parallelSafe: true,
+      description: { name: 'Read', description: 'Read.', parameters: {} },
+      async execute(arguments_) {
+        if (Reflect.get(arguments_ as object, 'path') === 'slow') await releaseSecond.promise
+        return String(Reflect.get(arguments_ as object, 'path'))
+      },
+    }],
+    store,
+  })
+
+  const turn = session.send('read both')
+  await firstPersisted.promise
+  const duringBatch = await store.loadSession(session.id)
+  const step = duringBatch?.turns[0]?.steps[0]
+  assert.equal(step?.output.kind, 'tool-calls')
+  if (step?.output.kind === 'tool-calls') {
+    assert.deepEqual(step.output.executions.map(execution => execution.status), [
+      'completed',
+      'running',
+    ])
+  }
+
+  releaseSecond.resolve()
+  assert.equal(await turn, 'done')
+})
+
 test('keeps completed turns in the next model request', async () => {
   const recordedRequests: Array<readonly Message[]> = []
   const answers = ['第一轮回答', '第二轮回答']
@@ -277,12 +320,13 @@ test('keeps completed turns in the next model request', async () => {
   ])
 })
 
-test('rolls back a failed turn before accepting the next turn', async () => {
+test('keeps a failed Turn context and continues the same Turn', async () => {
   let request = 0
   const model: Model = {
-    async generate() {
+    async generate(input) {
       request += 1
       if (request === 1) throw new Error('provider unavailable')
+      assert.deepEqual(input.messages, [{ role: 'user', content: 'failed turn' }])
       return { kind: 'final', content: 'recovered' }
     },
   }
@@ -290,13 +334,16 @@ test('rolls back a failed turn before accepting the next turn', async () => {
   const session = await AgentSession.create({ model, tools: [], store })
 
   await assert.rejects(session.send('failed turn'), /provider unavailable/)
-  assert.deepEqual(session.history(), [])
+  assert.deepEqual(session.history(), [{ role: 'user', content: 'failed turn' }])
+  assert.equal(session.hasRecoverableTurn(), true)
   const failedSnapshot = await store.loadSession(session.id)
   assert.equal(failedSnapshot?.turns[0]?.status, 'failed')
   assert.equal(failedSnapshot?.turns[0]?.error, 'provider unavailable')
-  assert.equal(await session.send('new turn'), 'recovered')
+  await assert.rejects(session.send('new turn'), /continue it first/)
+  assert.equal(await session.continueTurn(), 'recovered')
+  assert.equal(session.hasRecoverableTurn(), false)
   assert.deepEqual(session.history(), [
-    { role: 'user', content: 'new turn' },
+    { role: 'user', content: 'failed turn' },
     { role: 'assistant', content: 'recovered' },
   ])
 })
@@ -307,6 +354,9 @@ test('records a failed model invocation before failing the turn', async () => {
   const store: SessionStore = {
     createSession: async projectId => await inner.createSession(projectId),
     loadSession: async sessionId => await inner.loadSession(sessionId),
+    recoverTurn: async (sessionId, turnId, error) => {
+      await inner.recoverTurn(sessionId, turnId, error)
+    },
     record: async (sessionId, record) => {
       records.push(structuredClone(record))
       await inner.record(sessionId, record)
@@ -405,6 +455,121 @@ test('restores completed turns from durable session state', async () => {
     { role: 'assistant', content: '记住了' },
     { role: 'user', content: '暗号是什么？' },
   ])
+})
+
+test('restores completed Steps from a failed Turn and continues after reconnecting', async () => {
+  const store = new MemorySessionStore()
+  let request = 0
+  const read: Tool = {
+    description: { name: 'Read', description: 'Read.', parameters: {} },
+    async execute() {
+      return 'persisted source'
+    },
+  }
+  const first = await AgentSession.create({
+    model: {
+      async generate() {
+        request += 1
+        if (request === 1) {
+          return {
+            kind: 'tool-calls',
+            calls: [{ id: 'call-read', name: 'Read', arguments: { path: '/project/app.ts' } }],
+          }
+        }
+        throw new Error('provider disconnected')
+      },
+    },
+    tools: [read],
+    store,
+  })
+
+  await assert.rejects(first.send('inspect the project'), /provider disconnected/)
+  const failed = await store.loadSession(first.id)
+  assert.equal(failed?.turns[0]?.status, 'failed')
+  assert.equal(failed?.turns[0]?.steps[0]?.status, 'completed')
+
+  let restoredMessages: readonly Message[] = []
+  const resumed = await AgentSession.resume(first.id, {
+    model: {
+      async generate(input) {
+        restoredMessages = structuredClone(input.messages)
+        return { kind: 'final', content: 'continued result' }
+      },
+    },
+    tools: [read],
+    store,
+  })
+
+  assert.equal(resumed.hasRecoverableTurn(), true)
+  assert.equal(await resumed.continueTurn(), 'continued result')
+  assert.deepEqual(restoredMessages, [
+    { role: 'user', content: 'inspect the project' },
+    {
+      role: 'assistant',
+      toolCalls: [{ id: 'call-read', name: 'Read', arguments: { path: '/project/app.ts' } }],
+    },
+    { role: 'tool', toolCallId: 'call-read', content: 'persisted source' },
+  ])
+  const completed = await store.loadSession(first.id)
+  assert.equal(completed?.turns[0]?.status, 'completed')
+  assert.equal(completed?.turns[0]?.steps.length, 2)
+})
+
+test('does not replay an interrupted Tool call with unknown side effects', async () => {
+  const store = new MemorySessionStore()
+  const sessionId = await store.createSession(null)
+  const turnId = 'interrupted-turn'
+  await store.record(sessionId, { type: 'turn.started', turnId, prompt: 'modify files' })
+  await store.record(sessionId, {
+    type: 'step.tools-called',
+    turnId,
+    step: 1,
+    calls: [
+      { id: 'call-read', name: 'Read', arguments: { path: '/project/a.ts' } },
+      { id: 'call-edit', name: 'Edit', arguments: { path: '/project/b.ts' } },
+    ],
+  })
+  await store.record(sessionId, {
+    type: 'step.tool-completed',
+    turnId,
+    step: 1,
+    toolCallId: 'call-read',
+    result: 'source',
+  })
+
+  let editExecutions = 0
+  const resumed = await AgentSession.resume(sessionId, {
+    model: {
+      async generate(input) {
+        const messages = input.messages.slice(-3)
+        assert.deepEqual(messages[0], {
+          role: 'assistant',
+          toolCalls: [
+            { id: 'call-read', name: 'Read', arguments: { path: '/project/a.ts' } },
+            { id: 'call-edit', name: 'Edit', arguments: { path: '/project/b.ts' } },
+          ],
+        })
+        assert.deepEqual(messages[1], {
+          role: 'tool',
+          toolCallId: 'call-read',
+          content: 'source',
+        })
+        assert.match(String(Reflect.get(messages[2] ?? {}, 'content')), /was not run again/)
+        return { kind: 'final', content: 'verified current file state' }
+      },
+    },
+    tools: [{
+      description: { name: 'Edit', description: 'Edit.', parameters: {} },
+      async execute() {
+        editExecutions += 1
+        return 'edited'
+      },
+    }],
+    store,
+  })
+
+  assert.equal(await resumed.continueTurn(), 'verified current file state')
+  assert.equal(editExecutions, 0)
 })
 
 test('returns a tool error to the model and restores it with the completed turn', async () => {

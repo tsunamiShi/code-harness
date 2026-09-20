@@ -10,7 +10,7 @@ import { readChatTarget } from './chat-arguments.ts'
 import { createConsoleTrace } from './console-trace.ts'
 import { createMarkdownRenderer } from './markdown.ts'
 import {
-  agentMaxStepsFromEnvironment,
+  agentMaxTokensFromEnvironment,
   mysqlOptionsFromEnvironment,
   requiredEnvironment,
 } from './config.ts'
@@ -32,7 +32,7 @@ const sessionOptions = {
   store,
   project,
   accessMode: target.accessMode,
-  maxSteps: agentMaxStepsFromEnvironment(),
+  maxTokens: agentMaxTokensFromEnvironment(),
   onEvent: createConsoleTrace({
     write: text => console.log(text),
     colors: stdout.isTTY && process.env.NO_COLOR === undefined,
@@ -50,12 +50,29 @@ console.log(`Project: ${project.name}`)
 console.log(`Working directory: ${primaryRoot(project).path}`)
 console.log(`Filesystem access: ${target.accessMode}`)
 console.log(`Session: ${session.id}`)
-console.log('Enter /exit to quit. Resume later with: pnpm chat -- --session <session-id>')
+console.log('Enter /exit to quit or /retry to continue a failed Turn. Resume later with: pnpm chat -- --session <session-id>')
+
+if (session.hasRecoverableTurn()) {
+  console.log('Recovering the unfinished Turn from its persisted Steps...')
+  try {
+    await session.continueTurn()
+  } catch (error: unknown) {
+    console.error(`Agent recovery error: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
 
 try {
   while (true) {
     const prompt = (await terminal.question('\nYou> ')).trim()
     if (prompt === '/exit') break
+    if (prompt === '/retry') {
+      try {
+        await session.continueTurn()
+      } catch (error: unknown) {
+        console.error(`Agent recovery error: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      continue
+    }
     if (!prompt) continue
 
     try {

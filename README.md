@@ -15,7 +15,7 @@ Project
 
 `ProjectCatalog` 管理本地目录选择，`AgentSession` 控制 Agent Loop，`Model` 适配模型供应商，`Tool` 暴露外部能力，存储接口隔离持久化实现。正式 CLI 使用 `MysqlAgentStore`；一次性调用和单元测试可使用内存 Adapter。
 
-数据库保留完成和失败的 Turn/Step，并单独记录每次 Model Invocation 及其 Provider Attempts。发送给模型的 `messages` 只从已完成 Turn 投影，失败记录和观测数据不会污染后续上下文。
+数据库保留完成和失败的 Turn/Step，并单独记录每次 Model Invocation 及其 Provider Attempts。发送给模型的 `messages` 来自已完成 Turn，以及最后一个可恢复 Turn 中已经持久化的 Steps；遥测记录不会进入模型上下文。
 
 ## Source layout
 
@@ -54,7 +54,9 @@ CLI 在 Scoped 模式暴露六个代码工具：
 
 Full Access 模式额外暴露 `Bash`。它要求一个绝对 `cwd`，返回退出码、信号、stdout、stderr、超时和截断信息；非零退出属于可供模型修正的执行结果。当前默认超时 30 秒、最大 120 秒，stdout/stderr 各最多返回 64,000 字符。
 
-模型可以在同一个 Step 返回多个 Tool Calls。`Read / Glob / Grep` 声明为 parallel-safe，因此同批调用会并行执行并按模型给出的顺序写回结果。默认每个 Turn 最多执行 50 个模型 Step，可在 `.env` 使用 `AGENT_MAX_STEPS` 配置为 1 到 500；最后一个可用 Step 不再提供 Tools，保留给模型生成最终答案。
+模型可以在同一个 Step 返回多个 Tool Calls。`Read / Glob / Grep` 声明为 parallel-safe，因此同批调用会并行执行并按模型给出的顺序写回结果。Agent Loop 不限制 Step 数量；`.env` 中的 `AGENT_MAX_TOKENS` 只限制每次 Model Invocation 的最大输出，默认是 4096，不累计整个 Turn 的消耗。供应商以 `finish_reason=length` 截断响应时，Runtime 将本次调用视为失败，不把不完整文本误判成最终答案。
+
+Turn 中每个完成的 Tool Call 都会立即持久化。模型请求或进程异常后，Session 保留同一个 Turn 的用户输入、已完成 Tool Calls 和 Tool Results；使用 `--session` 重连时 CLI 自动继续该 Turn，失败后也可输入 `/retry` 再试。进程退出时仍处于 running 且结果尚未持久化的 Tool Call 不会被自动重放，因为 `Edit` 或 `Bash` 可能已经产生副作用；恢复过程会为它写入“结果未知”的 Tool Error，让模型检查当前状态后继续。
 
 ## 准备 MySQL
 

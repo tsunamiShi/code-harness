@@ -4,11 +4,14 @@ import { projectInstructions, type AgentProject, type FilesystemAccessMode } fro
 import { MemorySessionStore } from '../storage/memory-session-store.ts'
 import {
   projectMessages,
+  recoverableTurn,
+  type AgentTurn,
   type SessionStore,
 } from './session-store.ts'
 import type { Message, Model, ModelOutput, Tool, ToolCall } from './types.ts'
 
-const DEFAULT_MAX_STEPS = 50
+const DEFAULT_MAX_TOKENS = 4_096
+const INTERRUPTED_TOOL_ERROR = 'Error: execution stopped before this Tool result was persisted; the Tool was not run again because its side effects are unknown'
 
 export interface AgentSessionOptions {
   model: Model
@@ -16,7 +19,7 @@ export interface AgentSessionOptions {
   store: SessionStore
   project?: AgentProject
   accessMode?: FilesystemAccessMode
-  maxSteps?: number
+  maxTokens?: number
   onEvent?: (event: AgentEvent) => void
 }
 
@@ -27,6 +30,7 @@ export interface RunAgentOptions extends Omit<AgentSessionOptions, 'store'> {
 /** Runtime observations emitted in execution order for logs and user interfaces. */
 export type AgentEvent =
   | { type: 'turn.started'; turnId: string; prompt: string }
+  | { type: 'turn.resumed'; turnId: string; step: number }
   | {
       type: 'step.started'
       turnId: string
@@ -66,18 +70,21 @@ export class AgentSession {
   private readonly messages: Message[]
   private readonly toolsByName = new Map<string, Tool>()
   private readonly toolDescriptions: Tool['description'][]
-  private readonly maxSteps: number
+  private readonly maxTokens: number
+  private recoverableTurnId: string | undefined
   private running = false
 
   private constructor(
     readonly id: string,
     private readonly options: AgentSessionOptions,
     messages: readonly Message[],
+    recoverableTurnId?: string,
   ) {
     this.messages = [...structuredClone(messages)]
-    this.maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS
-    if (!Number.isInteger(this.maxSteps) || this.maxSteps < 1) {
-      throw new Error('maxSteps must be a positive integer')
+    this.maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS
+    this.recoverableTurnId = recoverableTurnId
+    if (!Number.isSafeInteger(this.maxTokens) || this.maxTokens < 1) {
+      throw new Error('maxTokens must be a positive safe integer')
     }
 
     for (const tool of options.tools) {
@@ -101,21 +108,24 @@ export class AgentSession {
     if (snapshot.projectId !== (options.project?.id ?? null)) {
       throw new Error(`Session ${sessionId} does not belong to the supplied project`)
     }
-    const runningTurn = snapshot.turns.find(turn => turn.status === 'running')
-    if (runningTurn) {
-      throw new Error(
-        `Session ${sessionId} has unfinished turn ${runningTurn.id}; recovery is not implemented yet`,
-      )
-    }
-    return new AgentSession(sessionId, options, projectMessages(snapshot))
+    const unfinished = recoverableTurn(snapshot)
+    return new AgentSession(
+      sessionId,
+      options,
+      projectMessages(snapshot),
+      unfinished?.id,
+    )
   }
 
   /**
-   * Executes one conversational turn. Calls on the same session must be sequential.
-   * Failed turns stay in storage for diagnosis but are removed from model-visible history.
+   * Executes one conversational turn. Calls on the same session must be sequential, and an
+   * unfinished Turn must be continued before accepting another user prompt.
    */
   async send(prompt: string): Promise<string> {
     if (this.running) throw new Error('AgentSession already has a running turn')
+    if (this.recoverableTurnId !== undefined) {
+      throw new Error(`Session has unfinished turn ${this.recoverableTurnId}; continue it first`)
+    }
     if (prompt.trim().length === 0) throw new Error('prompt must not be empty')
 
     this.running = true
@@ -129,140 +139,13 @@ export class AgentSession {
       turnStarted = true
       this.messages.push({ role: 'user', content: prompt })
       this.emit({ type: 'turn.started', turnId, prompt })
-
-      for (let step = 1; step <= this.maxSteps; step += 1) {
-        const messages = this.modelMessages()
-        const tools = step === this.maxSteps ? [] : this.toolDescriptions
-        this.emit({
-          type: 'step.started',
-          turnId,
-          step,
-          messageCount: messages.length,
-          toolCount: tools.length,
-        })
-        await this.options.store.record(this.id, {
-          type: 'model.invocation-started',
-          turnId,
-          step,
-          ...(this.options.model.descriptor === undefined
-            ? {}
-            : { descriptor: this.options.model.descriptor }),
-          messageCount: messages.length,
-          toolCount: tools.length,
-          inputChars: JSON.stringify({ messages, tools }).length,
-        })
-        const modelStartedAt = performance.now()
-        let output: ModelOutput
-        try {
-          output = await this.options.model.generate({
-            messages,
-            tools,
-            onAttempt: async event => {
-              await this.options.store.record(this.id, {
-                type: 'model.attempt',
-                turnId,
-                step,
-                event,
-              })
-            },
-          })
-        } catch (error: unknown) {
-          await this.options.store.record(this.id, {
-            type: 'model.invocation-failed',
-            turnId,
-            step,
-            errorName: errorName(error),
-            error: errorMessage(error),
-          })
-          throw error
-        }
-        await this.options.store.record(this.id, {
-          type: 'model.invocation-completed',
-          turnId,
-          step,
-          outputKind: output.kind,
-          outputChars: modelOutputChars(output),
-          reasoningChars: output.reasoningContent?.length ?? 0,
-          toolCallCount: output.kind === 'tool-calls' ? output.calls.length : 0,
-          ...(output.metadata === undefined ? {} : { metadata: output.metadata }),
-        })
-        this.emit({
-          type: 'model.completed',
-          turnId,
-          step,
-          durationMs: performance.now() - modelStartedAt,
-          output: structuredClone(output),
-        })
-
-        if (output.kind === 'final') {
-          await this.options.store.record(this.id, {
-            type: 'step.finalized',
-            turnId,
-            step,
-            content: output.content,
-          })
-          this.messages.push({ role: 'assistant', content: output.content })
-          await this.options.store.record(this.id, { type: 'turn.completed', turnId })
-          this.emit({
-            type: 'turn.completed',
-            turnId,
-            steps: step,
-            durationMs: performance.now() - turnStartedAt,
-          })
-          return output.content
-        }
-
-        validateToolCalls(output.calls)
-        await this.options.store.record(this.id, {
-          type: 'step.tools-called',
-          turnId,
-          step,
-          calls: output.calls,
-        })
-        this.messages.push({ role: 'assistant', toolCalls: structuredClone(output.calls) })
-
-        const executions = await this.executeToolCalls(turnId, step, output.calls)
-        for (const execution of executions) {
-          if (execution.failed) {
-            await this.options.store.record(this.id, {
-              type: 'step.tool-failed',
-              turnId,
-              step,
-              toolCallId: execution.call.id,
-              error: execution.content,
-            })
-          } else {
-            await this.options.store.record(this.id, {
-              type: 'step.tool-completed',
-              turnId,
-              step,
-              toolCallId: execution.call.id,
-              result: execution.content,
-            })
-          }
-          this.messages.push({
-            role: 'tool',
-            toolCallId: execution.call.id,
-            content: execution.content,
-          })
-        }
-      }
-
-      throw new Error(`Agent exceeded the ${this.maxSteps}-step limit`)
+      return await this.runTurn(turnId, 1, turnStartedAt)
     } catch (error: unknown) {
-      this.messages.length = turnStart
       if (turnStarted) {
-        await this.options.store.record(this.id, {
-          type: 'turn.failed',
-          turnId,
-          error: errorMessage(error),
-        })
-        this.emit({
-          type: 'turn.failed',
-          turnId,
-          durationMs: performance.now() - turnStartedAt,
-          error: errorMessage(error),
-        })
+        this.recoverableTurnId = turnId
+        await this.failTurn(turnId, turnStartedAt, error)
+      } else {
+        this.messages.length = turnStart
       }
       throw error
     } finally {
@@ -270,9 +153,190 @@ export class AgentSession {
     }
   }
 
-  /** Returns a detached model-context snapshot. Failed turns are intentionally absent. */
+  /** Reports whether the final Turn must be continued before another prompt can start. */
+  hasRecoverableTurn(): boolean {
+    return this.recoverableTurnId !== undefined
+  }
+
+  /** Continues the final failed or process-interrupted Turn from its durable Steps. */
+  async continueTurn(): Promise<string> {
+    if (this.running) throw new Error('AgentSession already has a running turn')
+    const turnId = this.recoverableTurnId
+    if (turnId === undefined) throw new Error('Session has no unfinished turn to continue')
+
+    this.running = true
+    const turnStartedAt = performance.now()
+    let recovered = false
+    try {
+      await this.options.store.recoverTurn(this.id, turnId, INTERRUPTED_TOOL_ERROR)
+      recovered = true
+      const snapshot = await this.requireSnapshot()
+      const turn = snapshot.turns.find(candidate => candidate.id === turnId)
+      if (!turn || turn.status !== 'running') throw new Error(`Turn ${turnId} was not recovered`)
+      this.replaceMessages(projectMessages(snapshot))
+
+      const final = completedFinal(turn)
+      if (final !== undefined) {
+        await this.options.store.record(this.id, { type: 'turn.completed', turnId })
+        this.recoverableTurnId = undefined
+        this.emit({
+          type: 'turn.completed',
+          turnId,
+          steps: final.stepNumber,
+          durationMs: performance.now() - turnStartedAt,
+        })
+        return final.output.content
+      }
+
+      const step = nextStepNumber(turn)
+      this.emit({ type: 'turn.resumed', turnId, step })
+      return await this.runTurn(turnId, step, turnStartedAt)
+    } catch (error: unknown) {
+      this.recoverableTurnId = turnId
+      if (recovered) await this.failTurn(turnId, turnStartedAt, error)
+      throw error
+    } finally {
+      this.running = false
+    }
+  }
+
+  /** Returns a detached snapshot of completed and recoverable model context. */
   history(): readonly Message[] {
     return structuredClone(this.messages)
+  }
+
+  private async runTurn(
+    turnId: string,
+    firstStep: number,
+    turnStartedAt: number,
+  ): Promise<string> {
+    for (let step = firstStep; ; step += 1) {
+      const messages = this.modelMessages()
+      const tools = this.toolDescriptions
+      this.emit({
+        type: 'step.started',
+        turnId,
+        step,
+        messageCount: messages.length,
+        toolCount: tools.length,
+      })
+      await this.options.store.record(this.id, {
+        type: 'model.invocation-started',
+        turnId,
+        step,
+        ...(this.options.model.descriptor === undefined
+          ? {}
+          : { descriptor: this.options.model.descriptor }),
+        messageCount: messages.length,
+        toolCount: tools.length,
+        inputChars: JSON.stringify({ messages, tools }).length,
+        maxTokens: this.maxTokens,
+      })
+      const modelStartedAt = performance.now()
+      let output: ModelOutput
+      try {
+        output = await this.options.model.generate({
+          messages,
+          tools,
+          maxTokens: this.maxTokens,
+          onAttempt: async event => {
+            await this.options.store.record(this.id, {
+              type: 'model.attempt',
+              turnId,
+              step,
+              event,
+            })
+          },
+        })
+      } catch (error: unknown) {
+        await this.options.store.record(this.id, {
+          type: 'model.invocation-failed',
+          turnId,
+          step,
+          errorName: errorName(error),
+          error: errorMessage(error),
+        })
+        throw error
+      }
+      await this.options.store.record(this.id, {
+        type: 'model.invocation-completed',
+        turnId,
+        step,
+        outputKind: output.kind,
+        outputChars: modelOutputChars(output),
+        reasoningChars: output.reasoningContent?.length ?? 0,
+        toolCallCount: output.kind === 'tool-calls' ? output.calls.length : 0,
+        ...(output.metadata === undefined ? {} : { metadata: output.metadata }),
+      })
+      this.emit({
+        type: 'model.completed',
+        turnId,
+        step,
+        durationMs: performance.now() - modelStartedAt,
+        output: structuredClone(output),
+      })
+
+      if (output.kind === 'final') {
+        await this.options.store.record(this.id, {
+          type: 'step.finalized',
+          turnId,
+          step,
+          content: output.content,
+        })
+        this.messages.push({ role: 'assistant', content: output.content })
+        await this.options.store.record(this.id, { type: 'turn.completed', turnId })
+        this.recoverableTurnId = undefined
+        this.emit({
+          type: 'turn.completed',
+          turnId,
+          steps: step,
+          durationMs: performance.now() - turnStartedAt,
+        })
+        return output.content
+      }
+
+      validateToolCalls(output.calls)
+      await this.options.store.record(this.id, {
+        type: 'step.tools-called',
+        turnId,
+        step,
+        calls: output.calls,
+      })
+      this.messages.push({ role: 'assistant', toolCalls: structuredClone(output.calls) })
+
+      const executions = await this.executeToolCalls(turnId, step, output.calls)
+      for (const execution of executions) {
+        this.messages.push({
+          role: 'tool',
+          toolCallId: execution.call.id,
+          content: execution.content,
+        })
+      }
+    }
+  }
+
+  private async failTurn(turnId: string, turnStartedAt: number, error: unknown): Promise<void> {
+    await this.options.store.record(this.id, {
+      type: 'turn.failed',
+      turnId,
+      error: errorMessage(error),
+    })
+    this.emit({
+      type: 'turn.failed',
+      turnId,
+      durationMs: performance.now() - turnStartedAt,
+      error: errorMessage(error),
+    })
+  }
+
+  private async requireSnapshot() {
+    const snapshot = await this.options.store.loadSession(this.id)
+    if (!snapshot) throw new Error(`Unknown session: ${this.id}`)
+    return snapshot
+  }
+
+  private replaceMessages(messages: readonly Message[]): void {
+    this.messages.splice(0, this.messages.length, ...structuredClone(messages))
   }
 
   private modelMessages(): readonly Message[] {
@@ -302,7 +366,15 @@ export class AgentSession {
       count: calls.length,
     })
     if (parallel) {
-      return await Promise.all(calls.map(call => this.executeToolCall(turnId, step, call)))
+      const settled = await Promise.allSettled(
+        calls.map(call => this.executeToolCall(turnId, step, call)),
+      )
+      const results: ToolExecutionResult[] = []
+      for (const result of settled) {
+        if (result.status === 'rejected') throw result.reason
+        results.push(result.value)
+      }
+      return results
     }
 
     const results: ToolExecutionResult[] = []
@@ -321,26 +393,53 @@ export class AgentSession {
     this.emit({ type: 'tool.started', turnId, step, call: structuredClone(call) })
     const tool = this.toolsByName.get(call.name)
     if (!tool) {
-      return this.completeToolExecution(
+      return await this.persistToolExecution(
         turnId,
         step,
         startedAt,
         { call, failed: true, content: `Error: unknown tool "${call.name}"` },
       )
     }
+    let execution: ToolExecutionResult
     try {
-      return this.completeToolExecution(turnId, step, startedAt, {
+      execution = {
         call,
         failed: false,
         content: await tool.execute(call.arguments),
-      })
+      }
     } catch (error: unknown) {
-      return this.completeToolExecution(turnId, step, startedAt, {
+      execution = {
         call,
         failed: true,
         content: `Error: ${errorMessage(error)}`,
-      })
+      }
     }
+    return await this.persistToolExecution(turnId, step, startedAt, execution)
+  }
+
+  private async persistToolExecution(
+    turnId: string,
+    step: number,
+    startedAt: number,
+    execution: ToolExecutionResult,
+  ): Promise<ToolExecutionResult> {
+    this.completeToolExecution(turnId, step, startedAt, execution)
+    await this.options.store.record(this.id, execution.failed
+      ? {
+          type: 'step.tool-failed',
+          turnId,
+          step,
+          toolCallId: execution.call.id,
+          error: execution.content,
+        }
+      : {
+          type: 'step.tool-completed',
+          turnId,
+          step,
+          toolCallId: execution.call.id,
+          result: execution.content,
+        })
+    return execution
   }
 
   private completeToolExecution(
@@ -371,17 +470,35 @@ export async function runAgent({
   model,
   tools,
   prompt,
-  maxSteps,
+  maxTokens,
   onEvent,
 }: RunAgentOptions): Promise<string> {
   const session = await AgentSession.create({
     model,
     tools,
     store: new MemorySessionStore(),
-    ...(maxSteps === undefined ? {} : { maxSteps }),
+    ...(maxTokens === undefined ? {} : { maxTokens }),
     ...(onEvent === undefined ? {} : { onEvent }),
   })
   return await session.send(prompt)
+}
+
+function completedFinal(turn: AgentTurn): CompletedFinalStep | undefined {
+  for (const step of turn.steps) {
+    if (step.status === 'completed' && step.output.kind === 'final') {
+      return { stepNumber: step.stepNumber, output: step.output }
+    }
+  }
+  return undefined
+}
+
+function nextStepNumber(turn: AgentTurn): number {
+  return Math.max(0, ...turn.steps.map(step => step.stepNumber)) + 1
+}
+
+interface CompletedFinalStep {
+  stepNumber: number
+  output: { kind: 'final'; content: string }
 }
 
 function errorMessage(error: unknown): string {

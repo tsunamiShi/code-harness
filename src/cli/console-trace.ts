@@ -20,6 +20,11 @@ export function createConsoleTrace(options: ConsoleTraceOptions): (event: AgentE
         options.write(`\n${color.bold('┌─ Turn started')} ${color.dim(shortId(event.turnId))}`)
         options.write(block('User', event.prompt, color.cyan))
         return
+      case 'turn.resumed':
+        options.write(
+          `\n${color.bold('┌─ Turn resumed')} ${color.dim(`${shortId(event.turnId)} · continuing at step ${event.step}`)}`,
+        )
+        return
       case 'step.started':
         options.write(
           `\n${color.bold(`├─ Step ${event.step}`)} ${color.dim(`model request · ${event.messageCount} messages · ${event.toolCount} tools`)}`,

@@ -52,6 +52,7 @@ export type SessionRecord =
       messageCount: number
       toolCount: number
       inputChars: number
+      maxTokens: number
     }
   | {
       type: 'model.attempt'
@@ -100,14 +101,22 @@ export interface SessionStore {
   createSession(projectId: string | null): Promise<string>
   loadSession(sessionId: string): Promise<AgentSessionSnapshot | undefined>
   record(sessionId: string, record: SessionRecord): Promise<void>
+  recoverTurn(sessionId: string, turnId: string, interruptedToolError: string): Promise<void>
 }
 
-/** Builds model-visible history from completed turns only. */
+/** Returns the final unfinished Turn, if recovery must precede a new Turn. */
+export function recoverableTurn(snapshot: AgentSessionSnapshot): AgentTurn | undefined {
+  const turn = snapshot.turns.at(-1)
+  return turn?.status === 'completed' ? undefined : turn
+}
+
+/** Builds model-visible history from completed Turns and durable work in the final unfinished Turn. */
 export function projectMessages(snapshot: AgentSessionSnapshot): readonly Message[] {
   const messages: Message[] = []
+  const unfinished = recoverableTurn(snapshot)
 
   for (const turn of snapshot.turns) {
-    if (turn.status !== 'completed') continue
+    if (turn.status !== 'completed' && turn.id !== unfinished?.id) continue
 
     messages.push({ role: 'user', content: turn.prompt })
     for (const step of turn.steps) {

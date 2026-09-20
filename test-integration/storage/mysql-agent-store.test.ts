@@ -120,8 +120,9 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
       model_name: string
       input_tokens: number
       total_tokens: number
+      max_tokens: number
     })[]>(
-      `SELECT status, provider_name, model_name, input_tokens, total_tokens
+      `SELECT status, provider_name, model_name, input_tokens, total_tokens, max_tokens
        FROM \`${database}\`.agent_model_invocations
        WHERE turn_id = ? ORDER BY step_number`,
       [snapshot?.turns[0]?.id],
@@ -133,6 +134,7 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
         model_name: 'integration-model',
         input_tokens: 10,
         total_tokens: 15,
+        max_tokens: 4096,
       },
       {
         status: 'completed',
@@ -140,6 +142,7 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
         model_name: 'integration-model',
         input_tokens: 20,
         total_tokens: 24,
+        max_tokens: 4096,
       },
     ])
     const [attemptRows] = await admin.query<(RowDataPacket & {
@@ -201,6 +204,72 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
       { role: 'tool', toolCallId: 'call-2', content: '测试结果' },
       { role: 'assistant', content: '第一轮完成' },
       { role: 'user', content: '第二轮' },
+    ])
+
+    let recoveryRequest = 0
+    const interrupted = await AgentSession.create({
+      model: {
+        async generate() {
+          recoveryRequest += 1
+          if (recoveryRequest === 1) {
+            return {
+              kind: 'tool-calls',
+              calls: [{ id: 'recovery-search', name: 'search', arguments: { query: 'saved' } }],
+            }
+          }
+          throw new Error('provider disconnected')
+        },
+      },
+      tools: [search],
+      store,
+      project: restoredProject,
+      maxTokens: 2048,
+    })
+    await assert.rejects(interrupted.send('recover this Turn'), /provider disconnected/)
+    const interruptedId = interrupted.id
+
+    await store.close()
+    store = await MysqlAgentStore.connect(options)
+    let recoveryMessages: readonly Message[] = []
+    const recovered = await AgentSession.resume(interruptedId, {
+      model: {
+        async generate(input) {
+          recoveryMessages = structuredClone(input.messages)
+          return { kind: 'final', content: 'recovered result' }
+        },
+      },
+      tools: [search],
+      store,
+      project: restoredProject,
+      maxTokens: 2048,
+    })
+    assert.equal(await recovered.continueTurn(), 'recovered result')
+    assert.deepEqual(recoveryMessages.slice(1), [
+      { role: 'user', content: 'recover this Turn' },
+      {
+        role: 'assistant',
+        toolCalls: [{ id: 'recovery-search', name: 'search', arguments: { query: 'saved' } }],
+      },
+      { role: 'tool', toolCallId: 'recovery-search', content: '测试结果' },
+    ])
+
+    const recoveredSnapshot = await store.loadSession(interruptedId)
+    assert.equal(recoveredSnapshot?.turns[0]?.status, 'completed')
+    const [recoveryInvocations] = await admin.query<(RowDataPacket & {
+      step_number: number
+      invocation_number: number
+      status: string
+      max_tokens: number
+    })[]>(
+      `SELECT step_number, invocation_number, status, max_tokens
+       FROM \`${database}\`.agent_model_invocations
+       WHERE turn_id = ? ORDER BY step_number, invocation_number`,
+      [recoveredSnapshot?.turns[0]?.id],
+    )
+    assert.deepEqual(recoveryInvocations.map(row => ({ ...row })), [
+      { step_number: 1, invocation_number: 1, status: 'completed', max_tokens: 2048 },
+      { step_number: 2, invocation_number: 1, status: 'failed', max_tokens: 2048 },
+      { step_number: 2, invocation_number: 2, status: 'completed', max_tokens: 2048 },
     ])
   } finally {
     await store?.close()

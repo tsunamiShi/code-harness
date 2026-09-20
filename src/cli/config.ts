@@ -1,6 +1,6 @@
 import type { MysqlAgentStoreOptions } from '../storage/mysql-agent-store.ts'
 
-const DEFAULT_AGENT_MAX_STEPS = 50
+const DEFAULT_AGENT_MAX_TOKENS = 4_096
 
 export function mysqlOptionsFromEnvironment(): MysqlAgentStoreOptions {
   return {
@@ -18,14 +18,14 @@ export function requiredEnvironment(name: string): string {
   return value
 }
 
-export function agentMaxStepsFromEnvironment(): number {
-  const value = process.env.AGENT_MAX_STEPS
-  if (value === undefined) return DEFAULT_AGENT_MAX_STEPS
-  const maxSteps = Number(value)
-  if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > 500) {
-    throw new Error(`Invalid AGENT_MAX_STEPS: ${value}`)
+export function agentMaxTokensFromEnvironment(): number {
+  const value = process.env.AGENT_MAX_TOKENS
+  if (value === undefined) return DEFAULT_AGENT_MAX_TOKENS
+  const maxTokens = Number(value)
+  if (!Number.isSafeInteger(maxTokens) || maxTokens < 1) {
+    throw new Error(`Invalid AGENT_MAX_TOKENS: ${value}`)
   }
-  return maxSteps
+  return maxTokens
 }
 
 function readPort(value: string): number {

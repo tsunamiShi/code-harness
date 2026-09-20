@@ -6,14 +6,16 @@ import type { ModelAttemptEvent } from '../../src/runtime/types.ts'
 
 test('reports every provider attempt and completion usage', async () => {
   let requests = 0
+  const requestBodies: unknown[] = []
   const events: ModelAttemptEvent[] = []
   const model = new OpenAICompatibleChatModel({
     apiKey: 'test-key',
     baseURL: 'https://provider.example/compatible-mode/v1',
     model: 'test-model',
     maxRetries: 1,
-    fetch: async () => {
+    fetch: async (_input, init) => {
       requests += 1
+      requestBodies.push(JSON.parse(String(init?.body)))
       if (requests === 1) {
         return new Response(JSON.stringify({ error: { message: 'temporary failure' } }), {
           status: 500,
@@ -56,12 +58,15 @@ test('reports every provider attempt and completion usage', async () => {
   const output = await model.generate({
     messages: [{ role: 'user', content: 'hello' }],
     tools: [],
+    maxTokens: 4096,
     onAttempt: async event => {
       events.push(structuredClone(event))
     },
   })
 
   assert.equal(requests, 2)
+  assert.equal(Reflect.get(requestBodies[0] as object, 'max_tokens'), 4096)
+  assert.equal(Reflect.get(requestBodies[1] as object, 'max_tokens'), 4096)
   assert.deepEqual(events, [
     { type: 'started', attempt: 1 },
     {
@@ -95,4 +100,37 @@ test('reports every provider attempt and completion usage', async () => {
       },
     },
   })
+})
+
+test('rejects a response truncated by the per-invocation token limit', async () => {
+  const model = new OpenAICompatibleChatModel({
+    apiKey: 'test-key',
+    baseURL: 'https://provider.example/compatible-mode/v1',
+    model: 'test-model',
+    maxRetries: 0,
+    fetch: async () => new Response(JSON.stringify({
+      id: 'completion-truncated',
+      object: 'chat.completion',
+      created: 1,
+      model: 'test-model',
+      choices: [{
+        index: 0,
+        finish_reason: 'length',
+        logprobs: null,
+        message: { role: 'assistant', content: 'partial answer' },
+      }],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  })
+
+  await assert.rejects(
+    model.generate({
+      messages: [{ role: 'user', content: 'hello' }],
+      tools: [],
+      maxTokens: 128,
+    }),
+    /128-token output limit/,
+  )
 })

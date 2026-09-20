@@ -211,6 +211,74 @@ export class MysqlAgentStore implements SessionStore, ProjectStore {
     }
   }
 
+  async recoverTurn(
+    sessionId: string,
+    turnId: string,
+    interruptedToolError: string,
+  ): Promise<void> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      await lockSession(connection, sessionId)
+      const [turns] = await connection.execute<RowDataPacket[]>(
+        `SELECT id FROM agent_turns
+         WHERE id = ? AND session_id = ? AND status IN ('running', 'failed')
+         FOR UPDATE`,
+        [turnId, sessionId],
+      )
+      if (turns.length !== 1) throw new Error(`Turn ${turnId} is not recoverable`)
+
+      await connection.execute(
+        `UPDATE agent_model_attempts AS a
+         INNER JOIN agent_model_invocations AS i ON i.id = a.invocation_id
+         SET a.status = 'failed', a.error_name = 'InterruptedExecution',
+             a.error_message = ?, a.completed_at = CURRENT_TIMESTAMP(6)
+         WHERE i.turn_id = ? AND a.status = 'running'`,
+        [interruptedToolError, turnId],
+      )
+      await connection.execute(
+        `UPDATE agent_model_invocations
+         SET status = 'failed', error_name = 'InterruptedExecution', error_message = ?,
+             completed_at = CURRENT_TIMESTAMP(6)
+         WHERE turn_id = ? AND status = 'running'`,
+        [interruptedToolError, turnId],
+      )
+      await connection.execute(
+        `UPDATE agent_tool_calls AS c
+         INNER JOIN agent_steps AS s ON s.id = c.step_id
+         SET c.status = 'failed', c.error_message = ?, c.completed_at = CURRENT_TIMESTAMP(6)
+         WHERE s.turn_id = ? AND c.status = 'running'`,
+        [interruptedToolError, turnId],
+      )
+      await connection.execute(
+        `UPDATE agent_steps AS s
+         SET s.status = 'completed', s.completed_at = CURRENT_TIMESTAMP(6)
+         WHERE s.turn_id = ? AND s.output_kind = 'tool-call' AND s.status = 'running'
+           AND NOT EXISTS (
+             SELECT 1 FROM agent_tool_calls AS c
+             WHERE c.step_id = s.id AND c.status = 'running'
+           )`,
+        [turnId],
+      )
+      await connection.execute(
+        `UPDATE agent_turns
+         SET status = 'running', error_message = NULL, completed_at = NULL
+         WHERE id = ? AND session_id = ?`,
+        [turnId, sessionId],
+      )
+      await connection.execute(
+        'UPDATE agent_sessions SET updated_at = CURRENT_TIMESTAMP(6) WHERE id = ?',
+        [sessionId],
+      )
+      await connection.commit()
+    } catch (error: unknown) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
+  }
+
   async close(): Promise<void> {
     await this.pool.end()
   }
@@ -313,7 +381,7 @@ async function migrate(pool: Pool): Promise<void> {
     'SELECT MAX(version) AS version FROM agent_schema_migrations',
   )
   const version = rows[0]?.version ?? 0
-  if (version > 4) throw new Error(`Database schema version ${version} is newer than supported version 4`)
+  if (version > 5) throw new Error(`Database schema version ${version} is newer than supported version 5`)
 
   if (version < 1) {
     await pool.execute(`
@@ -506,6 +574,18 @@ async function migrate(pool: Pool): Promise<void> {
     `)
     await pool.execute('INSERT IGNORE INTO agent_schema_migrations (version) VALUES (4)')
   }
+
+  if (version < 5) {
+    await pool.execute(`
+      ALTER TABLE agent_model_invocations
+        DROP INDEX uq_agent_model_invocations_turn_step,
+        ADD COLUMN invocation_number INT UNSIGNED NOT NULL DEFAULT 1 AFTER step_number,
+        ADD COLUMN max_tokens INT UNSIGNED NULL AFTER input_chars,
+        ADD UNIQUE KEY uq_agent_model_invocations_turn_step_number
+          (turn_id, step_number, invocation_number)
+    `)
+    await pool.execute('INSERT IGNORE INTO agent_schema_migrations (version) VALUES (5)')
+  }
 }
 
 async function lockSession(connection: PoolConnection, sessionId: string): Promise<void> {
@@ -546,14 +626,25 @@ async function applyRecord(
     }
     case 'model.invocation-started': {
       await requireRunningTurn(connection, sessionId, record.turnId)
+      const [numbers] = await connection.execute<(RowDataPacket & { next_number: number })[]>(
+        `SELECT COALESCE(MAX(invocation_number), 0) + 1 AS next_number
+         FROM agent_model_invocations WHERE turn_id = ? AND step_number = ?`,
+        [record.turnId, record.step],
+      )
+      const invocationNumber = numbers[0]?.next_number
+      if (invocationNumber === undefined) {
+        throw new Error(`Cannot allocate model invocation number for step ${record.step}`)
+      }
       await connection.execute(
         `INSERT INTO agent_model_invocations
-           (turn_id, step_number, status, provider_name, model_name, protocol_name,
-            request_timeout_ms, max_retries, message_count, tool_count, input_chars)
-         VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (turn_id, step_number, invocation_number, status, provider_name, model_name,
+            protocol_name, request_timeout_ms, max_retries, message_count, tool_count,
+            input_chars, max_tokens)
+         VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           record.turnId,
           record.step,
+          invocationNumber,
           record.descriptor?.provider ?? null,
           record.descriptor?.model ?? null,
           record.descriptor?.protocol ?? null,
@@ -562,6 +653,7 @@ async function applyRecord(
           record.messageCount,
           record.toolCount,
           record.inputChars,
+          record.maxTokens,
         ],
       )
       return
