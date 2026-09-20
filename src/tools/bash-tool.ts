@@ -2,11 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 
 import type { AgentProject, FilesystemAccessMode } from '../projects/project.ts'
 import type { Tool } from '../runtime/types.ts'
-import {
-  resolveExistingProjectPath,
-  selectProjectRoot,
-  projectRootProperty,
-} from './filesystem-tools.ts'
+import { resolveAuthorizedExistingPath } from './filesystem-tools.ts'
 
 const DEFAULT_TIMEOUT_MS = 30_000
 const MAX_TIMEOUT_MS = 120_000
@@ -31,10 +27,9 @@ export function createBashTool(
       parameters: {
         type: 'object',
         properties: {
-          root: projectRootProperty(project, accessMode),
-          path: {
+          cwd: {
             type: 'string',
-            description: 'Optional working directory relative to the selected root.',
+            description: 'Absolute working directory for the command.',
           },
           command: {
             type: 'string',
@@ -49,7 +44,7 @@ export function createBashTool(
             description: `Execution timeout in milliseconds. Defaults to ${DEFAULT_TIMEOUT_MS}.`,
           },
         },
-        required: ['command'],
+        required: ['cwd', 'command'],
         additionalProperties: false,
       },
     },
@@ -59,18 +54,16 @@ export function createBashTool(
       if (command.length > MAX_COMMAND_CHARACTERS) {
         throw new Error(`Bash command exceeds the ${MAX_COMMAND_CHARACTERS}-character limit`)
       }
-      const root = await selectProjectRoot(project, accessMode, optionalString(input, 'root'))
-      const workingDirectory = await resolveExistingProjectPath(
-        root,
-        optionalString(input, 'path') ?? '.',
+      const workingDirectory = await resolveAuthorizedExistingPath(
+        project,
+        accessMode,
+        requiredString(input, 'cwd'),
         'directory',
       )
       const timeoutMs = optionalInteger(input, 'timeoutMs') ?? DEFAULT_TIMEOUT_MS
       return JSON.stringify(await runBash({
         command,
         cwd: workingDirectory.actualPath,
-        root: root.path,
-        path: workingDirectory.displayPath,
         timeoutMs,
       }))
     },
@@ -80,8 +73,6 @@ export function createBashTool(
 interface RunBashInput {
   command: string
   cwd: string
-  root: string
-  path: string
   timeoutMs: number
 }
 
@@ -114,8 +105,7 @@ async function runBash(input: RunBashInput): Promise<Record<string, unknown>> {
   try {
     const { code, signal } = await waitForExit(child)
     return {
-      root: input.root,
-      path: input.path,
+      cwd: input.cwd,
       command: input.command,
       exitCode: code,
       signal,
@@ -173,7 +163,7 @@ async function waitForExit(
 
 function readArguments(value: unknown): Record<string, unknown> {
   if (!isRecord(value)) throw new Error('Bash arguments must be an object')
-  const unknown = Object.keys(value).find(key => !['root', 'path', 'command', 'timeoutMs'].includes(key))
+  const unknown = Object.keys(value).find(key => !['cwd', 'command', 'timeoutMs'].includes(key))
   if (unknown) throw new Error(`Bash received unknown argument: ${unknown}`)
   return value
 }
@@ -182,15 +172,6 @@ function requiredString(input: Record<string, unknown>, key: string): string {
   const value = input[key]
   if (typeof value !== 'string' || value.length === 0) {
     throw new Error(`Bash requires a non-empty ${key}`)
-  }
-  return value
-}
-
-function optionalString(input: Record<string, unknown>, key: string): string | undefined {
-  const value = input[key]
-  if (value === undefined) return undefined
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new Error(`Bash ${key} must be a non-empty string`)
   }
   return value
 }

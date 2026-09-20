@@ -4,6 +4,8 @@
 
 Accepted
 
+The model-facing working-directory interface is replaced by [ADR-016](016-code-tools-expose-absolute-paths.md).
+
 ## Date
 
 2026-09-18

@@ -2,7 +2,7 @@
 
 ## Status
 
-Superseded in part by ADR-012
+Superseded in part by ADR-012 and ADR-016
 
 ## Date
 

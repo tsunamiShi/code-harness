@@ -21,18 +21,32 @@ test('scoped mode exposes language intelligence but withholds unsandboxed Bash',
   )
 })
 
+test('code Tool schemas expose absolute paths without a root selector', async t => {
+  const fixture = await createFixture(t)
+  const tools = createCodeTools(fixture.project, 'full')
+
+  for (const tool of tools) {
+    const properties = Reflect.get(tool.description.parameters, 'properties')
+    assert.ok(typeof properties === 'object' && properties !== null)
+    assert.equal(Reflect.has(properties, 'root'), false, tool.description.name)
+  }
+
+  const bash = requireTool(tools, 'Bash')
+  const bashRequired = Reflect.get(bash.description.parameters, 'required')
+  assert.deepEqual(bashRequired, ['cwd', 'command'])
+})
+
 test('Bash runs in a selected working directory and returns non-zero exits as results', async t => {
   const fixture = await createFixture(t)
   await mkdir(join(fixture.primary, 'packages'))
   const bash = requireTool(createCodeTools(fixture.project, 'full'), 'Bash')
 
   const result = await executeJson(bash, {
-    path: 'packages',
+    cwd: join(fixture.primary, 'packages'),
     command: 'printf "out"; printf "err" >&2; exit 7',
   })
 
-  assert.equal(result.root, fixture.primary)
-  assert.equal(result.path, 'packages')
+  assert.equal(result.cwd, join(fixture.primary, 'packages'))
   assert.equal(result.exitCode, 7)
   assert.equal(result.timedOut, false)
   assert.equal(result.stdout, 'out')
@@ -45,7 +59,11 @@ test('Bash terminates commands after the requested timeout', async t => {
   const fixture = await createFixture(t)
   const bash = requireTool(createCodeTools(fixture.project, 'full'), 'Bash')
 
-  const result = await executeJson(bash, { command: 'sleep 5', timeoutMs: 20 })
+  const result = await executeJson(bash, {
+    cwd: fixture.primary,
+    command: 'sleep 5',
+    timeoutMs: 20,
+  })
 
   assert.equal(result.timedOut, true)
   assert.equal(result.signal, 'SIGTERM')
@@ -70,7 +88,7 @@ test('LSP resolves a TypeScript definition through the language-server protocol'
 
   const result = await executeJson(lsp, {
     operation: 'definition',
-    path: 'use.ts',
+    path: join(fixture.primary, 'use.ts'),
     line: 2,
     column: 2,
   })
@@ -79,7 +97,7 @@ test('LSP resolves a TypeScript definition through the language-server protocol'
   assert.deepEqual(result.position, { line: 2, column: 2 })
   assert.deepEqual(result.locations, [
     {
-      path: 'definition.ts',
+      path: join(fixture.primary, 'definition.ts'),
       start: { line: 1, column: 17 },
       end: { line: 1, column: 22 },
     },
@@ -88,7 +106,7 @@ test('LSP resolves a TypeScript definition through the language-server protocol'
 
   const references = await executeJson(lsp, {
     operation: 'references',
-    path: 'definition.ts',
+    path: join(fixture.primary, 'definition.ts'),
     line: 1,
     column: 18,
   })
@@ -98,7 +116,7 @@ test('LSP resolves a TypeScript definition through the language-server protocol'
 
   const hover = await executeJson(lsp, {
     operation: 'hover',
-    path: 'use.ts',
+    path: join(fixture.primary, 'use.ts'),
     line: 2,
     column: 2,
   })
@@ -127,7 +145,7 @@ test('LSP routes Vue files through Vue Language Server', async t => {
 
   const result = await executeJson(lsp, {
     operation: 'definition',
-    path: 'Example.vue',
+    path: join(fixture.primary, 'Example.vue'),
     line: 3,
     column: 18,
   })
@@ -135,7 +153,7 @@ test('LSP routes Vue files through Vue Language Server', async t => {
   assert.equal(result.languageServer, 'vue-language-server')
   assert.deepEqual(result.locations, [
     {
-      path: 'Example.vue',
+      path: join(fixture.primary, 'Example.vue'),
       start: { line: 2, column: 10 },
       end: { line: 2, column: 16 },
     },
@@ -143,7 +161,7 @@ test('LSP routes Vue files through Vue Language Server', async t => {
 
   const references = await executeJson(lsp, {
     operation: 'references',
-    path: 'Example.vue',
+    path: join(fixture.primary, 'Example.vue'),
     line: 2,
     column: 11,
   })
@@ -152,7 +170,7 @@ test('LSP routes Vue files through Vue Language Server', async t => {
 
   const hover = await executeJson(lsp, {
     operation: 'hover',
-    path: 'Example.vue',
+    path: join(fixture.primary, 'Example.vue'),
     line: 3,
     column: 18,
   })
@@ -171,13 +189,13 @@ test('LSP routes Vue files through Vue Language Server', async t => {
   )
   const changedDefinition = await executeJson(lsp, {
     operation: 'definition',
-    path: 'Example.vue',
+    path: join(fixture.primary, 'Example.vue'),
     line: 3,
     column: 18,
   })
   assert.deepEqual(changedDefinition.locations, [
     {
-      path: 'Example.vue',
+      path: join(fixture.primary, 'Example.vue'),
       start: { line: 2, column: 10 },
       end: { line: 2, column: 21 },
     },

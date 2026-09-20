@@ -4,6 +4,8 @@
 
 Accepted
 
+The model-facing Root selector, relative-path input, and relative-path result are replaced by [ADR-016](016-code-tools-expose-absolute-paths.md).
+
 ## Date
 
 2026-09-18

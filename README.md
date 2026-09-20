@@ -42,7 +42,7 @@ CLI 在 Scoped 模式暴露六个代码工具：
 - `Write`：创建一个此前不存在的 UTF-8 文件。
 - `LSP`：查询 Vue/TypeScript/JavaScript 的源码定义、引用和 Hover 类型信息。
 
-前五个 Filesystem Tools 默认使用 Project 的 Primary Root；`root` 参数可以选择一个 Attached Root。所有路径都必须相对于所选 Root，运行时会检查规范路径和符号链接的真实目标。结果包含固定上限和截断标记，Tool Error 会写入 Step 并返回模型修正，而不是直接结束 Turn。
+前五个 Filesystem Tools 统一接收绝对 `path`，不向模型暴露 Root 选择参数。Runtime 根据规范化后的绝对路径识别所属 Primary 或 Attached Root，并检查符号链接的真实目标。Glob、Grep 和 LSP 返回的文件路径同样是绝对路径，可以直接传给 Read、Edit 或后续查询。结果包含固定上限和截断标记，Tool Error 会写入 Step 并返回模型修正，而不是直接结束 Turn。
 
 `Edit` 要求 `oldText` 在不超过 2 MB 的目标文件中恰好出现一次，单个 `oldText` 或 `newText` 最多 64,000 字符。它先写入同目录临时文件、复查原文件未变化，再原子替换目标并返回修改行范围和修改前后的 SHA-256。`Edit` 不支持创建文件。
 
@@ -50,9 +50,9 @@ CLI 在 Scoped 模式暴露六个代码工具：
 
 `LSP` 当前支持 `definition / references / hover`，并按文件类型选择语言服务：TypeScript/JavaScript 使用 `typescript-language-server`，Vue SFC 使用 `@vue/language-server` 与 `@vue/typescript-plugin` 组成的复合适配器。Vue Language Server 负责 SFC 文档服务及其自定义协议，Vue TypeScript Plugin 通过 `tsserver` 提供 `<script>` 内的 TypeScript 语义。这个差异被封装在同一个模型可见工具后面，避免为每种语言增加一套工具。
 
-模型统一使用从 1 开始的行列号，Runtime 将不同协议结果归一化为 Root 相对路径，并过滤所选 Root 之外的位置。同一个 CLI 进程按 Project Root 和语言 Provider 复用 Language Server；查询前通过 `didOpen / didChange` 同步当前文件，单个客户端内串行执行协议请求。客户端池最多保留四组进程，使用 LRU 回收较旧的 Root；CLI 退出时通过 Tool 的 `close()` 生命周期钩子关闭全部子进程。进程意外退出后，下一次只读查询会重建客户端并重试一次。
+模型统一使用从 1 开始的行列号，Runtime 将不同协议结果归一化为绝对路径，并过滤 Language Server Root 之外的位置。同一个 CLI 进程按 Runtime 推导出的 Project Root 和语言 Provider 复用 Language Server；Full Access 路径不属于 Project 时，Runtime 向上寻找最近的 TypeScript、JavaScript、Package 或 Git 项目标记。查询前通过 `didOpen / didChange` 同步当前文件，单个客户端内串行执行协议请求。客户端池最多保留四组进程，使用 LRU 回收较旧的 Root；CLI 退出时通过 Tool 的 `close()` 生命周期钩子关闭全部子进程。进程意外退出后，下一次只读查询会重建客户端并重试一次。
 
-Full Access 模式额外暴露 `Bash`。它以选定 Root 或其相对子目录为 `cwd`，返回退出码、信号、stdout、stderr、超时和截断信息；非零退出属于可供模型修正的执行结果。当前默认超时 30 秒、最大 120 秒，stdout/stderr 各最多返回 64,000 字符。
+Full Access 模式额外暴露 `Bash`。它要求一个绝对 `cwd`，返回退出码、信号、stdout、stderr、超时和截断信息；非零退出属于可供模型修正的执行结果。当前默认超时 30 秒、最大 120 秒，stdout/stderr 各最多返回 64,000 字符。
 
 模型可以在同一个 Step 返回多个 Tool Calls。`Read / Glob / Grep` 声明为 parallel-safe，因此同批调用会并行执行并按模型给出的顺序写回结果。默认每个 Turn 最多执行 50 个模型 Step，可在 `.env` 使用 `AGENT_MAX_STEPS` 配置为 1 到 500；最后一个可用 Step 不再提供 Tools，保留给模型生成最终答案。
 
@@ -113,11 +113,11 @@ pnpm chat -- --project <project-id> --full-access
 pnpm chat -- --session <session-id> --full-access
 ```
 
-`--full-access` 允许全部 Filesystem Tools 选择任意存在的绝对目录作为 `root`，包括通过 `Edit / Write` 修改或创建文件。工具仍然执行相对路径、符号链接、文件类型、结果上限、超时和内容大小检查。该授权不写入数据库，下次启动必须重新声明；操作系统权限和 macOS 隐私控制仍可能拒绝访问。
+`--full-access` 允许全部 Filesystem Tools 使用任意绝对路径，包括通过 `Edit / Write` 修改或创建文件。工具仍然执行绝对路径、符号链接、文件类型、结果上限、超时和内容大小检查。该授权不写入数据库，下次启动必须重新声明；操作系统权限和 macOS 隐私控制仍可能拒绝访问。
 
 Full Access 还会启用 `Bash`。`cwd` 不是安全边界：Shell 命令可以使用绝对路径或自行切换目录，因此在没有 OS sandbox 的阶段，Scoped 模式不会向模型提供 Bash。
 
-System Prompt 会说明每个 Code Tool 的职责，并要求模型优先使用专用工具：文件读取使用 `Read`，文件发现使用 `Glob`，内容搜索使用 `Grep`，语义查询使用 `LSP`，文件修改使用 `Edit / Write`。即使 Full Access 提供了 `Bash`，也只应用于 Git、测试、构建、包管理器和没有专用 Tool 的命令，不应用 Shell 命令重复实现已有文件工具。
+System Prompt 会说明每个 Code Tool 的职责，要求模型复用 Tool 返回的绝对路径，并优先使用专用工具：文件读取使用 `Read`，文件发现使用 `Glob`，内容搜索使用 `Grep`，语义查询使用 `LSP`，文件修改使用 `Edit / Write`。即使 Full Access 提供了 `Bash`，也只应用于 Git、测试、构建、包管理器和没有专用 Tool 的命令，不应用 Shell 命令重复实现已有文件工具。
 
 CLI 会显示 Primary Root 和新 Session ID。正常退出后可以恢复：
 
@@ -158,6 +158,7 @@ Reasoning Content 只来自供应商响应的 `reasoning_content` 字段。并�
 - [ADR-012: Full access authorizes all Filesystem Tools](docs/decisions/012-full-access-authorizes-all-filesystem-tools.md)
 - [ADR-013: Unsandboxed Bash requires full access](docs/decisions/013-unsandboxed-bash-requires-full-access.md)
 - [ADR-014: Reuse language servers within the CLI process](docs/decisions/014-reuse-language-servers-within-cli-process.md)
+- [ADR-016: Code Tools expose absolute paths](docs/decisions/016-code-tools-expose-absolute-paths.md)
 
 ## 当前限制
 

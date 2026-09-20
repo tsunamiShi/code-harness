@@ -4,6 +4,8 @@
 
 Accepted
 
+The model-facing relative-path role of Primary Root is replaced by [ADR-016](016-code-tools-expose-absolute-paths.md); Project Root ownership and authorization remain accepted.
+
 ## Date
 
 2026-09-17

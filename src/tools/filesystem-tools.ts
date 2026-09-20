@@ -8,9 +8,7 @@ import { createInterface } from 'node:readline'
 import { rgPath } from '@vscode/ripgrep'
 
 import {
-  primaryRoot,
   type AgentProject,
-  type ProjectRoot,
   type FilesystemAccessMode,
 } from '../projects/project.ts'
 import type { Tool } from '../runtime/types.ts'
@@ -37,8 +35,7 @@ export function createFilesystemTools(
   accessMode: FilesystemAccessMode = 'scoped',
 ): readonly Tool[] {
   const filesystem = new ProjectFilesystem(project, accessMode)
-  const rootProperty = filesystem.rootProperty()
-  const scope = accessMode === 'full' ? 'the selected local directory' : 'the Project'
+  const scope = accessMode === 'full' ? 'the local filesystem' : 'the Project roots'
 
   return [
     {
@@ -46,14 +43,13 @@ export function createFilesystemTools(
       description: {
         name: 'Read',
         description:
-          `Read UTF-8 text from a file inside ${scope}. Paths are relative to the selected root.`,
+          `Read UTF-8 text from an absolute file path inside ${scope}.`,
         parameters: {
           type: 'object',
           properties: {
-            root: rootProperty,
             path: {
               type: 'string',
-              description: 'File path relative to the selected Project Root.',
+              description: 'Absolute file path. Reuse paths returned by Glob, Grep, or LSP.',
             },
             offset: {
               type: 'integer',
@@ -72,10 +68,9 @@ export function createFilesystemTools(
         },
       },
       async execute(arguments_) {
-        const input = readArguments(arguments_, 'Read', ['root', 'path', 'offset', 'limit'])
+        const input = readArguments(arguments_, 'Read', ['path', 'offset', 'limit'])
         return serialize(
           await filesystem.read({
-            root: optionalString(input, 'root'),
             path: requiredString(input, 'path', 'Read'),
             offset: optionalInteger(input, 'offset', 1, Number.MAX_SAFE_INTEGER) ?? 1,
             limit: optionalInteger(input, 'limit', 1, MAX_READ_LINES) ?? DEFAULT_READ_LINES,
@@ -92,10 +87,9 @@ export function createFilesystemTools(
         parameters: {
           type: 'object',
           properties: {
-            root: rootProperty,
             path: {
               type: 'string',
-              description: 'Existing file path relative to the selected Project Root.',
+              description: 'Absolute path of the existing file. Read the same path before editing.',
             },
             oldText: {
               type: 'string',
@@ -114,14 +108,13 @@ export function createFilesystemTools(
         },
       },
       async execute(arguments_) {
-        const input = readArguments(arguments_, 'Edit', ['root', 'path', 'oldText', 'newText'])
+        const input = readArguments(arguments_, 'Edit', ['path', 'oldText', 'newText'])
         const oldText = requiredString(input, 'oldText', 'Edit')
         const newText = requiredText(input, 'newText', 'Edit')
         assertMaximumCharacters(oldText, 'Edit oldText', MAX_EDIT_TEXT_CHARACTERS)
         assertMaximumCharacters(newText, 'Edit newText', MAX_EDIT_TEXT_CHARACTERS)
         return serialize(
           await filesystem.edit({
-            root: optionalString(input, 'root'),
             path: requiredString(input, 'path', 'Edit'),
             oldText,
             newText,
@@ -138,10 +131,9 @@ export function createFilesystemTools(
         parameters: {
           type: 'object',
           properties: {
-            root: rootProperty,
             path: {
               type: 'string',
-              description: 'New file path relative to the selected Project Root.',
+              description: 'Absolute path of the new file.',
             },
             content: {
               type: 'string',
@@ -154,12 +146,11 @@ export function createFilesystemTools(
         },
       },
       async execute(arguments_) {
-        const input = readArguments(arguments_, 'Write', ['root', 'path', 'content'])
+        const input = readArguments(arguments_, 'Write', ['path', 'content'])
         const content = requiredText(input, 'content', 'Write')
         assertMaximumCharacters(content, 'Write content', MAX_WRITE_CHARACTERS)
         return serialize(
           await filesystem.write({
-            root: optionalString(input, 'root'),
             path: requiredString(input, 'path', 'Write'),
             content,
           }),
@@ -171,18 +162,17 @@ export function createFilesystemTools(
       description: {
         name: 'Glob',
         description:
-          `Find files by a glob pattern inside ${scope}. Results are relative to the selected root.`,
+          `Find files by a glob pattern below an absolute directory path inside ${scope}. Results are absolute paths.`,
         parameters: {
           type: 'object',
           properties: {
-            root: rootProperty,
             pattern: {
               type: 'string',
               description: 'Glob pattern such as src/**/*.ts.',
             },
             path: {
               type: 'string',
-              description: 'Optional directory relative to the selected root in which to search.',
+              description: 'Absolute directory path in which to search.',
             },
             limit: {
               type: 'integer',
@@ -191,17 +181,16 @@ export function createFilesystemTools(
               description: `Maximum files to return. Defaults to ${DEFAULT_GLOB_RESULTS}.`,
             },
           },
-          required: ['pattern'],
+          required: ['path', 'pattern'],
           additionalProperties: false,
         },
       },
       async execute(arguments_) {
-        const input = readArguments(arguments_, 'Glob', ['root', 'pattern', 'path', 'limit'])
+        const input = readArguments(arguments_, 'Glob', ['pattern', 'path', 'limit'])
         return serialize(
           await filesystem.glob({
-            root: optionalString(input, 'root'),
             pattern: requiredString(input, 'pattern', 'Glob'),
-            path: optionalString(input, 'path'),
+            path: requiredString(input, 'path', 'Glob'),
             limit:
               optionalInteger(input, 'limit', 1, MAX_GLOB_RESULTS) ?? DEFAULT_GLOB_RESULTS,
           }),
@@ -217,14 +206,13 @@ export function createFilesystemTools(
         parameters: {
           type: 'object',
           properties: {
-            root: rootProperty,
             pattern: {
               type: 'string',
               description: 'Rust regular expression accepted by ripgrep.',
             },
             path: {
               type: 'string',
-              description: 'Optional file or directory relative to the selected root.',
+              description: 'Absolute file or directory path to search.',
             },
             glob: {
               type: 'string',
@@ -241,13 +229,12 @@ export function createFilesystemTools(
               description: `Maximum matching lines to return. Defaults to ${DEFAULT_GREP_RESULTS}.`,
             },
           },
-          required: ['pattern'],
+          required: ['path', 'pattern'],
           additionalProperties: false,
         },
       },
       async execute(arguments_) {
         const input = readArguments(arguments_, 'Grep', [
-          'root',
           'pattern',
           'path',
           'glob',
@@ -256,9 +243,8 @@ export function createFilesystemTools(
         ])
         return serialize(
           await filesystem.grep({
-            root: optionalString(input, 'root'),
             pattern: requiredString(input, 'pattern', 'Grep'),
-            path: optionalString(input, 'path'),
+            path: requiredString(input, 'path', 'Grep'),
             glob: optionalString(input, 'glob'),
             caseSensitive: optionalBoolean(input, 'caseSensitive') ?? true,
             maxResults:
@@ -272,36 +258,31 @@ export function createFilesystemTools(
 }
 
 interface ReadInput {
-  root: string | undefined
   path: string
   offset: number
   limit: number
 }
 
 interface EditInput {
-  root: string | undefined
   path: string
   oldText: string
   newText: string
 }
 
 interface WriteInput {
-  root: string | undefined
   path: string
   content: string
 }
 
 interface GlobInput {
-  root: string | undefined
   pattern: string
-  path: string | undefined
+  path: string
   limit: number
 }
 
 interface GrepInput {
-  root: string | undefined
   pattern: string
-  path: string | undefined
+  path: string
   glob: string | undefined
   caseSensitive: boolean
   maxResults: number
@@ -313,13 +294,8 @@ class ProjectFilesystem {
     private readonly accessMode: FilesystemAccessMode,
   ) {}
 
-  rootProperty(): Record<string, unknown> {
-    return projectRootProperty(this.project, this.accessMode)
-  }
-
   async read(input: ReadInput): Promise<Record<string, unknown>> {
-    const root = await this.selectRoot(input.root)
-    const target = await this.resolveExisting(root, input.path, 'file')
+    const target = await this.resolveExisting(input.path, 'file')
     await assertTextFile(target.actualPath, input.path)
 
     const lines: Array<{ line: number; text: string }> = []
@@ -353,8 +329,7 @@ class ProjectFilesystem {
     }
 
     return {
-      root: root.path,
-      path: target.displayPath,
+      path: target.actualPath,
       lines,
       truncated,
     }
@@ -364,8 +339,7 @@ class ProjectFilesystem {
     if (input.oldText === input.newText) {
       throw new Error('Edit oldText and newText must be different')
     }
-    const root = await this.selectRoot(input.root)
-    const target = await this.resolveExisting(root, input.path, 'file')
+    const target = await this.resolveExisting(input.path, 'file')
     const details = await stat(target.actualPath)
     if (details.size > MAX_EDIT_FILE_BYTES) {
       throw new Error(`Edit file exceeds the ${MAX_EDIT_FILE_BYTES}-byte limit: ${input.path}`)
@@ -396,8 +370,7 @@ class ProjectFilesystem {
     }
 
     return {
-      root: root.path,
-      path: target.displayPath,
+      path: target.actualPath,
       changedRange: {
         startLine: lineNumberAt(before, firstMatch),
         oldLines: lineCount(input.oldText),
@@ -409,8 +382,7 @@ class ProjectFilesystem {
   }
 
   async write(input: WriteInput): Promise<Record<string, unknown>> {
-    const root = await this.selectRoot(input.root)
-    const target = await this.resolveNewFile(root, input.path)
+    const target = await this.resolveNewFile(input.path)
     const temporaryPath = resolve(target.parentPath, `.ai-agent-write-${randomUUID()}.tmp`)
     let targetCreated = false
 
@@ -431,8 +403,7 @@ class ProjectFilesystem {
 
     if (!targetCreated) throw new Error(`Write failed to create target: ${input.path}`)
     return {
-      root: root.path,
-      path: target.displayPath,
+      path: target.actualPath,
       characters: input.content.length,
       bytes: Buffer.byteLength(input.content, 'utf8'),
       sha256: sha256(input.content),
@@ -440,9 +411,8 @@ class ProjectFilesystem {
   }
 
   async glob(input: GlobInput): Promise<Record<string, unknown>> {
-    const root = await this.selectRoot(input.root)
     const pattern = requireRelativePattern(input.pattern, 'Glob pattern')
-    const base = await this.resolveExisting(root, input.path ?? '.', 'directory')
+    const base = await this.resolveExisting(input.path, 'directory')
     const files: string[] = []
     let candidateCount = 0
     let scanLimitReached = false
@@ -457,9 +427,13 @@ class ProjectFilesystem {
           scanLimitReached = true
           break
         }
-        const candidate = await existingFileInside(root, resolve(base.actualPath, match))
+        const candidate = await existingAuthorizedFile(
+          this.project,
+          this.accessMode,
+          resolve(base.actualPath, match),
+        )
         if (!candidate) continue
-        files.push(toDisplayPath(root.path, candidate))
+        files.push(candidate)
       }
     } catch (error: unknown) {
       throw new Error(`Glob failed for pattern ${JSON.stringify(input.pattern)}: ${errorMessage(error)}`)
@@ -467,7 +441,7 @@ class ProjectFilesystem {
 
     const uniqueFiles = [...new Set(files)].sort()
     return {
-      root: root.path,
+      path: base.actualPath,
       pattern: input.pattern,
       files: uniqueFiles.slice(0, input.limit),
       truncated: scanLimitReached || uniqueFiles.length > input.limit,
@@ -476,134 +450,80 @@ class ProjectFilesystem {
 
   async grep(input: GrepInput): Promise<Record<string, unknown>> {
     if (input.pattern.length === 0) throw new Error('Grep pattern must not be empty')
-    const root = await this.selectRoot(input.root)
-    const target = await this.resolveExisting(root, input.path ?? '.', 'file-or-directory')
+    const target = await this.resolveExisting(input.path, 'file-or-directory')
     const fileGlob = input.glob === undefined
       ? undefined
       : requireRelativePattern(input.glob, 'Grep glob')
     const matches = await runRipgrep({
-      root,
-      targetPath: toDisplayPath(root.path, target.actualPath),
+      cwd: target.details.isDirectory() ? target.actualPath : dirname(target.actualPath),
+      targetPath: target.actualPath,
       pattern: input.pattern,
       fileGlob,
       caseSensitive: input.caseSensitive,
       maxResults: input.maxResults,
     })
     return {
-      root: root.path,
+      path: target.actualPath,
       pattern: input.pattern,
       matches: matches.items,
       limitReached: matches.limitReached,
     }
   }
 
-  private async selectRoot(value: string | undefined): Promise<ProjectRoot> {
-    return await selectProjectRoot(this.project, this.accessMode, value)
-  }
-
   private async resolveExisting(
-    root: ProjectRoot,
     inputPath: string,
     expected: 'file' | 'directory' | 'file-or-directory',
-  ): Promise<{ actualPath: string; displayPath: string }> {
-    return await resolveExistingProjectPath(root, inputPath, expected)
+  ): Promise<AuthorizedExistingPath> {
+    return await resolveAuthorizedExistingPath(this.project, this.accessMode, inputPath, expected)
   }
 
   private async resolveNewFile(
-    root: ProjectRoot,
     inputPath: string,
-  ): Promise<{ actualPath: string; displayPath: string; parentPath: string }> {
-    const relativePath = requireRelativePath(inputPath)
-    const lexicalPath = resolve(root.path, relativePath)
-    assertInside(root.path, lexicalPath, inputPath)
-
-    const lexicalParent = dirname(lexicalPath)
+  ): Promise<{ actualPath: string; parentPath: string }> {
+    const absolutePath = requireAbsolutePath(inputPath)
+    const lexicalParent = dirname(absolutePath)
     let parentPath: string
     try {
       parentPath = await realpath(lexicalParent)
     } catch (error: unknown) {
-      throw new Error(`Write parent directory does not exist: ${toDisplayPath(root.path, lexicalParent)}`, {
+      throw new Error(`Write parent directory does not exist: ${lexicalParent}`, {
         cause: error,
       })
     }
-    assertInside(root.path, parentPath, inputPath)
+    authorizePath(this.project, this.accessMode, parentPath, inputPath)
     if (!(await stat(parentPath)).isDirectory()) {
-      throw new Error(`Write parent path is not a directory: ${toDisplayPath(root.path, lexicalParent)}`)
+      throw new Error(`Write parent path is not a directory: ${lexicalParent}`)
     }
 
-    const actualPath = resolve(parentPath, basename(lexicalPath))
-    assertInside(root.path, actualPath, inputPath)
+    const actualPath = resolve(parentPath, basename(absolutePath))
+    authorizePath(this.project, this.accessMode, actualPath, inputPath)
     return {
       actualPath,
-      displayPath: toDisplayPath(root.path, lexicalPath),
       parentPath,
     }
   }
 }
 
-/** Describes the model-facing root selector for the current access mode. */
-export function projectRootProperty(
-  project: AgentProject,
-  accessMode: FilesystemAccessMode,
-): Record<string, unknown> {
-  if (accessMode === 'full') {
-    return {
-      type: 'string',
-      description:
-        'Absolute local directory to use as the root. Omit or use primary for the Primary Root.',
-    }
-  }
-  return {
-    type: 'string',
-    enum: ['primary', ...project.roots.map(root => root.path)],
-    description:
-      'Project Root to use. Omit or use primary for the Primary Root; attached roots use their absolute path from the Project context.',
-  }
+export interface AuthorizedExistingPath {
+  actualPath: string
+  details: Awaited<ReturnType<typeof stat>>
 }
 
-/** Resolves a model-selected root under scoped or full filesystem access. */
-export async function selectProjectRoot(
+/** Resolves an absolute existing path and applies the current Project access mode. */
+export async function resolveAuthorizedExistingPath(
   project: AgentProject,
   accessMode: FilesystemAccessMode,
-  value: string | undefined,
-): Promise<ProjectRoot> {
-  const primary = primaryRoot(project)
-  if (value === undefined || value === 'primary') return primary
-  const root = project.roots.find(candidate => candidate.path === value)
-  if (root) return root
-  if (accessMode === 'scoped') throw new Error(`Unknown Project Root: ${value}`)
-  if (!isAbsolute(value)) {
-    throw new Error(`Full-access root must be an absolute directory: ${value}`)
-  }
-  let actualPath: string
-  try {
-    actualPath = await realpath(value)
-  } catch (error: unknown) {
-    throw new Error(`Full-access root does not exist: ${value}`, { cause: error })
-  }
-  if (!(await stat(actualPath)).isDirectory()) {
-    throw new Error(`Full-access root is not a directory: ${value}`)
-  }
-  return { path: actualPath, role: 'attached' }
-}
-
-/** Resolves and validates an existing path without following it outside the selected root. */
-export async function resolveExistingProjectPath(
-  root: ProjectRoot,
   inputPath: string,
   expected: 'file' | 'directory' | 'file-or-directory',
-): Promise<{ actualPath: string; displayPath: string }> {
-  const relativePath = requireRelativePath(inputPath)
-  const lexicalPath = resolve(root.path, relativePath)
-  assertInside(root.path, lexicalPath, inputPath)
-
+): Promise<AuthorizedExistingPath> {
+  const absolutePath = requireAbsolutePath(inputPath)
   let actualPath: string
   try {
-    actualPath = await realpath(lexicalPath)
+    actualPath = await realpath(absolutePath)
   } catch (error: unknown) {
     throw new Error(`Project path does not exist: ${inputPath}`, { cause: error })
   }
-  assertInside(root.path, actualPath, inputPath)
+  authorizePath(project, accessMode, actualPath, inputPath)
 
   const details = await stat(actualPath)
   if (expected === 'file' && !details.isFile()) {
@@ -615,11 +535,11 @@ export async function resolveExistingProjectPath(
   if (expected === 'file-or-directory' && !details.isFile() && !details.isDirectory()) {
     throw new Error(`Project path is not a file or directory: ${inputPath}`)
   }
-  return { actualPath, displayPath: toDisplayPath(root.path, lexicalPath) }
+  return { actualPath, details }
 }
 
 interface RipgrepInput {
-  root: ProjectRoot
+  cwd: string
   targetPath: string
   pattern: string
   fileGlob: string | undefined
@@ -651,7 +571,7 @@ async function runRipgrep(
     input.targetPath,
   ]
   const child = spawn(rgPath, arguments_, {
-    cwd: input.root.path,
+    cwd: input.cwd,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   const exit = waitForExit(child)
@@ -672,7 +592,7 @@ async function runRipgrep(
 
   try {
     for await (const line of reader) {
-      const match = parseRipgrepMatch(line, input.root.path)
+      const match = parseRipgrepMatch(line, input.cwd)
       if (!match) continue
       items.push(match)
       if (items.length >= input.maxResults) {
@@ -711,7 +631,7 @@ function parseRipgrepMatch(line: string, rootPath: string): GrepMatch | undefine
   const absolutePath = isAbsolute(path) ? path : resolve(rootPath, path)
   assertInside(rootPath, absolutePath, path)
   return {
-    path: toDisplayPath(rootPath, absolutePath),
+    path: absolutePath,
     line: lineNumber,
     text: text.length > MAX_GREP_LINE_CHARACTERS
       ? `${text.slice(0, MAX_GREP_LINE_CHARACTERS - 1)}…`
@@ -741,14 +661,22 @@ async function assertTextFile(path: string, inputPath: string): Promise<void> {
   }
 }
 
-async function existingFileInside(root: ProjectRoot, path: string): Promise<string | undefined> {
+async function existingAuthorizedFile(
+  project: AgentProject,
+  accessMode: FilesystemAccessMode,
+  path: string,
+): Promise<string | undefined> {
   let actualPath: string
   try {
     actualPath = await realpath(path)
   } catch {
     return undefined
   }
-  if (!isInside(root.path, actualPath)) return undefined
+  try {
+    authorizePath(project, accessMode, actualPath, path)
+  } catch {
+    return undefined
+  }
   try {
     return (await stat(actualPath)).isFile() ? actualPath : undefined
   } catch {
@@ -823,13 +751,10 @@ function optionalBoolean(input: Record<string, unknown>, key: string): boolean |
   return value
 }
 
-function requireRelativePath(value: string): string {
+function requireAbsolutePath(value: string): string {
   if (value.includes('\0')) throw new Error('Project path must not contain a null byte')
-  if (isAbsolute(value)) throw new Error(`Project path must be relative: ${value}`)
-  if (pathSegments(value).includes('..')) {
-    throw new Error(`Project path must not contain parent traversal: ${value}`)
-  }
-  return value.length === 0 ? '.' : value
+  if (!isAbsolute(value)) throw new Error(`Project path must be absolute: ${value}`)
+  return resolve(value)
 }
 
 function requireRelativePattern(value: string, label: string): string {
@@ -848,18 +773,24 @@ function pathSegments(value: string): readonly string[] {
 
 function assertInside(rootPath: string, candidatePath: string, inputPath: string): void {
   if (!isInside(rootPath, candidatePath)) {
-    throw new Error(`Project path escapes its selected root: ${inputPath}`)
+    throw new Error(`Path escapes its search directory: ${inputPath}`)
   }
+}
+
+function authorizePath(
+  project: AgentProject,
+  accessMode: FilesystemAccessMode,
+  candidatePath: string,
+  inputPath: string,
+): void {
+  if (accessMode === 'full') return
+  if (project.roots.some(root => isInside(root.path, candidatePath))) return
+  throw new Error(`Path is outside the Project roots: ${inputPath}`)
 }
 
 function isInside(rootPath: string, candidatePath: string): boolean {
   const pathFromRoot = relative(rootPath, candidatePath)
   return pathFromRoot === '' || (!pathFromRoot.startsWith(`..${sep}`) && pathFromRoot !== '..' && !isAbsolute(pathFromRoot))
-}
-
-function toDisplayPath(rootPath: string, candidatePath: string): string {
-  const pathFromRoot = relative(rootPath, candidatePath)
-  return (pathFromRoot || '.').split(sep).join('/')
 }
 
 function textField(value: unknown, label: string): string {

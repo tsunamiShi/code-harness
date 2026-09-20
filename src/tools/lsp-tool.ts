@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { readFile, realpath } from 'node:fs/promises'
+import { access, readFile, realpath } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -14,11 +14,7 @@ import {
 import type { AgentProject, ProjectRoot, FilesystemAccessMode } from '../projects/project.ts'
 import type { Tool } from '../runtime/types.ts'
 import { LspClientPool, type PooledLspClient } from './lsp-client-pool.ts'
-import {
-  resolveExistingProjectPath,
-  selectProjectRoot,
-  projectRootProperty,
-} from './filesystem-tools.ts'
+import { resolveAuthorizedExistingPath } from './filesystem-tools.ts'
 import { VueTsServerBridge } from './vue-tsserver-bridge.ts'
 
 const LSP_TIMEOUT_MS = 15_000
@@ -52,7 +48,6 @@ export function createLspTool(
       parameters: {
         type: 'object',
         properties: {
-          root: projectRootProperty(project, accessMode),
           operation: {
             type: 'string',
             enum: ['definition', 'references', 'hover'],
@@ -60,7 +55,7 @@ export function createLspTool(
           },
           path: {
             type: 'string',
-            description: 'Vue, TypeScript, or JavaScript file relative to the selected root.',
+            description: 'Absolute path of a Vue, TypeScript, or JavaScript file.',
           },
           line: {
             type: 'integer',
@@ -83,15 +78,14 @@ export function createLspTool(
       const inputPath = requiredString(input, 'path')
       const line = requiredInteger(input, 'line')
       const column = requiredInteger(input, 'column')
-      const root = await selectProjectRoot(project, accessMode, optionalString(input, 'root'))
-      const target = await resolveExistingProjectPath(root, inputPath, 'file')
+      const target = await resolveAuthorizedExistingPath(project, accessMode, inputPath, 'file')
+      const root = await languageServerRoot(project, target.actualPath)
       const languageServer = languageServerFor(inputPath)
       const content = await readFile(target.actualPath, 'utf8')
       const query = {
         root,
         operation,
         targetPath: target.actualPath,
-        displayPath: target.displayPath,
         languageServer,
         content,
         line,
@@ -110,7 +104,6 @@ interface LanguageServerQuery {
   root: ProjectRoot
   operation: LspOperation
   targetPath: string
-  displayPath: string
   languageServer: LanguageServerAdapter
   content: string
   line: number
@@ -210,20 +203,18 @@ class LanguageServerClient implements PooledLspClient<LanguageServerQuery, Recor
 
       if (input.operation === 'hover') {
         return {
-          root: input.root.path,
           languageServer: input.languageServer.name,
           operation: input.operation,
-          path: input.displayPath,
+          path: input.targetPath,
           position: { line: input.line, column: input.column },
           hover: normalizeHover(result),
         }
       }
       const locations = await normalizeLocations(input.root.path, result)
       return {
-        root: input.root.path,
         languageServer: input.languageServer.name,
         operation: input.operation,
-        path: input.displayPath,
+        path: input.targetPath,
         position: { line: input.line, column: input.column },
         locations: locations.slice(0, MAX_LOCATIONS),
         truncated: locations.length > MAX_LOCATIONS,
@@ -376,7 +367,7 @@ async function normalizeLocations(
     const normalizedRange = normalizeRange(range)
     if (!normalizedRange) continue
     locations.push({
-      path: toDisplayPath(rootPath, actualPath),
+      path: actualPath,
       ...normalizedRange,
     })
   }
@@ -471,7 +462,7 @@ function languageServerFor(path: string): LanguageServerAdapter {
 function readArguments(value: unknown): Record<string, unknown> {
   if (!isRecord(value)) throw new Error('LSP arguments must be an object')
   const unknown = Object.keys(value).find(
-    key => !['root', 'operation', 'path', 'line', 'column'].includes(key),
+    key => !['operation', 'path', 'line', 'column'].includes(key),
   )
   if (unknown) throw new Error(`LSP received unknown argument: ${unknown}`)
   return value
@@ -491,15 +482,6 @@ function requiredString(input: Record<string, unknown>, key: string): string {
   return value
 }
 
-function optionalString(input: Record<string, unknown>, key: string): string | undefined {
-  const value = input[key]
-  if (value === undefined) return undefined
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new Error(`LSP ${key} must be a non-empty string`)
-  }
-  return value
-}
-
 function requiredInteger(input: Record<string, unknown>, key: string): number {
   const value = input[key]
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
@@ -514,8 +496,37 @@ function isInside(rootPath: string, candidatePath: string): boolean {
     || (!pathFromRoot.startsWith(`..${sep}`) && pathFromRoot !== '..' && !isAbsolute(pathFromRoot))
 }
 
-function toDisplayPath(rootPath: string, candidatePath: string): string {
-  return relative(rootPath, candidatePath).split(sep).join('/') || '.'
+async function languageServerRoot(
+  project: AgentProject,
+  absolutePath: string,
+): Promise<ProjectRoot> {
+  const root = [...project.roots]
+    .filter(candidate => isInside(candidate.path, absolutePath))
+    .sort((left, right) => right.path.length - left.path.length)[0]
+  if (root) return root
+
+  const containingDirectory = dirname(absolutePath)
+  let candidate = containingDirectory
+  while (true) {
+    if (await containsProjectMarker(candidate)) {
+      return { path: candidate, role: 'attached' }
+    }
+    const parent = dirname(candidate)
+    if (parent === candidate) return { path: containingDirectory, role: 'attached' }
+    candidate = parent
+  }
+}
+
+async function containsProjectMarker(path: string): Promise<boolean> {
+  for (const marker of ['tsconfig.json', 'jsconfig.json', 'package.json', '.git']) {
+    try {
+      await access(resolve(path, marker))
+      return true
+    } catch {
+      // A missing marker is expected while walking toward the filesystem root.
+    }
+  }
+  return false
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

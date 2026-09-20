@@ -45,7 +45,7 @@ Project 授权 Agent 使用的一个本地目录。一个 Project 可以包含�
 _Avoid_: Project、Working Directory
 
 **Primary Root**:
-Project 中唯一的默认工作目录，相对路径和对话的默认代码上下文从这里解析。
+Project 中唯一的默认工作目录，也是模型开始代码探索时的首要绝对路径。
 _Avoid_: Current Directory、Main Project
 
 **Attached Root**:
@@ -53,35 +53,35 @@ Project 中除 Primary Root 外的授权目录，不改变默认工作目录。
 _Avoid_: Secondary Project、Dependency
 
 **Filesystem Tool**:
-绑定到一个 Project，并在所选 Project Root 内执行文件操作的 Tool。路径授权由 Runtime 强制执行，不依赖模型遵守 Prompt。
+绑定到一个 Project，并使用绝对路径执行文件操作的 Tool。Scoped 模式下，Runtime 根据规范路径识别所属 Project Root 并强制授权，不依赖模型选择 Root 或遵守 Prompt。
 _Avoid_: Global Tool、Project Tool
 
 **Filesystem Access Mode**:
-当前 CLI 进程对 Filesystem Tool 的 Root 授权策略。`scoped` 只允许 Project Roots，`full` 允许读取和修改任意本地绝对目录；不属于 Session 持久状态。
+当前 CLI 进程对 Filesystem Tool 绝对路径的授权策略。`scoped` 只允许 Project Roots 内的规范路径，`full` 允许读取和修改任意本地绝对路径；不属于 Session 持久状态。
 _Avoid_: Project Permission、Session Permission
 
 **Read**:
-读取 Project Root 内一个 UTF-8 文本文件的有界行范围。
+读取一个绝对路径所指向 UTF-8 文本文件的有界行范围。
 _Avoid_: Fetch、Open
 
 **Edit**:
-在 Project Root 内的已有 UTF-8 文件中精确替换唯一一处文本。Edit 不创建文件，并以原子文件替换提交修改。
+在绝对路径所指向的已有 UTF-8 文件中精确替换唯一一处文本。Edit 不创建文件，并以原子文件替换提交修改。
 _Avoid_: Write、Patch、Search and Replace All
 
 **Write**:
-在 Project Root 内创建一个此前不存在的 UTF-8 文件。Write 不覆盖已有路径。
+在绝对路径创建一个此前不存在的 UTF-8 文件。Write 不覆盖已有路径。
 _Avoid_: Edit、Overwrite、Append
 
 **Glob**:
-按相对路径模式查找 Project Root 内的候选文件。
+在一个绝对目录路径下按相对 Glob 模式查找候选文件，并返回绝对文件路径。
 _Avoid_: List Files、Find Files
 
 **Grep**:
-按正则表达式搜索 Project Root 内的文件内容，并返回匹配文件和行号。
+按正则表达式搜索绝对文件或目录路径，并返回匹配文件的绝对路径和行号。
 _Avoid_: Search Text、Search
 
 **Bash**:
-在本机 Bash 进程中执行命令的 Code Tool，拥有与 Agent CLI 进程相同的系统权限，不受工作目录限制。
+以绝对 `cwd` 在本机 Bash 进程中执行命令的 Code Tool，拥有与 Agent CLI 进程相同的系统权限；`cwd` 不构成权限限制。
 _Avoid_: Terminal、Sandbox、Shell Script
 
 **LSP**:

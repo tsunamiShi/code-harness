@@ -66,7 +66,7 @@ test('attaches a canonical directory to an existing project', async t => {
   ])
 })
 
-test('full-access instructions allow arbitrary roots without changing the Project', () => {
+test('full-access instructions allow arbitrary absolute paths without changing the Project', () => {
   const project: AgentProject = {
     id: 'project-1',
     name: 'project',
@@ -76,8 +76,8 @@ test('full-access instructions allow arbitrary roots without changing the Projec
   const instructions = projectInstructions(project, 'full')
 
   assert.match(instructions, /Filesystem access mode: full/)
-  assert.match(instructions, /including Edit and Write/)
-  assert.match(instructions, /any absolute local directory as root/)
+  assert.match(instructions, /any absolute local path/)
+  assert.match(instructions, /All code Tool paths must be absolute/)
   assert.doesNotMatch(instructions, /Do not access paths outside/)
 })
 
@@ -102,6 +102,7 @@ test('instructions require dedicated code tools instead of Bash equivalents', ()
   assert.match(instructions, /Use Grep instead of Bash commands such as grep or rg/)
   assert.match(instructions, /Do not use Bash for reading, discovering, searching, or editing/)
   assert.match(instructions, /request them together in one tool-call batch/)
+  assert.match(instructions, /Reuse exact absolute paths returned by Tools/)
 })
 
 test('scoped instructions omit unavailable Bash guidance', () => {

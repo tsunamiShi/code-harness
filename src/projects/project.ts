@@ -92,7 +92,9 @@ export function projectInstructions(
     `Primary working directory: ${primary.path}`,
     'Project roots:',
     roots,
-    'Resolve relative paths against the primary working directory.',
+    'All code Tool paths must be absolute.',
+    'Reuse exact absolute paths returned by Tools instead of converting them to relative paths or guessing them.',
+    'Project roots are exploration starting points; the Runtime enforces filesystem access.',
     '',
     'Available code tools:',
     '- Read: read a bounded line range from one UTF-8 text file.',
@@ -114,11 +116,11 @@ export function projectInstructions(
   ]
   if (accessMode === 'full') {
     instructions.push(
-      '- Bash: run builds, tests, Git, package-manager commands, and operations that have no dedicated tool.',
+      '- Bash: run builds, tests, Git, package-manager commands, and operations that have no dedicated tool; cwd must be absolute.',
       '- Do not use Bash for reading, discovering, searching, or editing project files when the dedicated tools can perform the operation.',
       '',
       'Filesystem access mode: full.',
-      'All Filesystem Tools, including Edit and Write, may select any absolute local directory as root; paths remain relative to that root.',
+      'Filesystem Tools may access any absolute local path allowed by the host operating system.',
     )
   } else {
     instructions.push(
