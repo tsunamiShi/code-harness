@@ -29,7 +29,7 @@ src/
 └─ cli/       命令入口、参数解析、环境配置和终端输出
 ```
 
-`models/openai-compatible-chat-model.ts` 按协议而不是模型品牌命名。它通过 OpenAI-compatible Chat Completions 协议连接当前 `.env` 配置的模型，因此可以使用百炼提供的 Qwen、GLM 或其他兼容模型，而不需要为每个模型复制一个 Adapter。
+`models/openai-compatible-responses-model.ts` 按协议而不是模型品牌命名。它通过 OpenAI-compatible Responses API 连接当前 `.env` 配置的模型，因此可以使用百炼提供的兼容模型，而不需要为每个模型复制一个 Adapter。Runtime 持久化每个完成 Step 的 Provider Response ID，后续请求通过 `previous_response_id` 只发送新增的用户输入、System Message 或 `function_call_output`，不再重放完整历史。
 
 ## Filesystem Tools
 
@@ -54,7 +54,7 @@ CLI 在 Scoped 模式暴露六个代码工具：
 
 Full Access 模式额外暴露 `Bash`。它要求一个绝对 `cwd`，返回退出码、信号、stdout、stderr、超时和截断信息；非零退出属于可供模型修正的执行结果。当前默认超时 30 秒、最大 120 秒，stdout/stderr 各最多返回 64,000 字符。
 
-模型可以在同一个 Step 返回多个 Tool Calls。`Read / Glob / Grep` 声明为 parallel-safe，因此同批调用会并行执行并按模型给出的顺序写回结果。Agent Loop 不限制 Step 数量；`AGENT_MAX_TOKENS` 是可选的单次 Model Invocation 输出上限，未配置时不发送 `max_tokens`，由 Provider 和 Model 决定默认值。显式配置的上限不累计整个 Turn 的消耗。供应商以 `finish_reason=length` 截断响应时，Runtime 将本次调用视为失败，不把不完整文本误判成最终答案。
+模型可以在同一个 Step 返回多个 Tool Calls。`Read / Glob / Grep` 声明为 parallel-safe，因此同批调用会并行执行并按模型给出的顺序写回结果。Agent Loop 不限制 Step 数量；`AGENT_MAX_TOKENS` 是可选的单次 Model Invocation 输出上限，未配置时不发送 `max_output_tokens`，由 Provider 和 Model 决定默认值。显式配置的上限不累计整个 Turn 的消耗。供应商以 `status=incomplete` 和 `reason=max_output_tokens` 截断响应时，Runtime 将本次调用视为失败，不把不完整文本误判成最终答案。
 
 Turn 中每个完成的 Tool Call 都会立即持久化。模型请求或进程异常后，Session 保留同一个 Turn 的用户输入、已完成 Tool Calls 和 Tool Results；使用 `--session` 重连时 CLI 自动继续该 Turn，失败后也可输入 `/retry` 再试。进程退出时仍处于 running 且结果尚未持久化的 Tool Call 不会被自动重放，因为 `Edit` 或 `Bash` 可能已经产生副作用；恢复过程会为它写入“结果未知”的 Tool Error，让模型检查当前状态后继续。
 
@@ -131,7 +131,7 @@ pnpm chat -- --session <session-id>
 
 Final Content 会把模型返回的 Markdown 渲染成适合当前终端宽度的标题、列表、强调、代码块、表格和链接预览；数据库仍保存原始 Markdown。Verbose 模式下 Tool Result 在终端最多显示 4,000 字符，完整结果仍会写入数据库并反馈给模型。MySQL 还会持久化 Model Invocation 的输入规模、Token Usage、结束原因和错误，以及每次实际 Provider Attempt 的 HTTP 状态、Request ID、错误与时间。
 
-Reasoning Content 只来自供应商响应的 `reasoning_content` 字段。并非所有模型或每个响应都会返回该字段；未返回时 CLI 会明确显示 `Provider reasoning: not returned`，不会把 Runtime 自己生成的说明伪装成模型思考。Reasoning Content 原文仍只存在于实时 Trace；数据库仅保留其字符数和供应商报告的 reasoning token 数。
+Reasoning Content 只来自供应商 Responses 输出中的 `reasoning` item（`summary` 或显式 `content`）。并非所有模型或每个响应都会返回这些内容；未返回时 CLI 会明确显示 `Provider reasoning: not returned`，不会把 Runtime 自己生成的说明伪装成模型思考。Reasoning Content 原文仍只存在于实时 Trace；数据库仅保留其字符数和供应商报告的 reasoning token 数。
 
 ## 数据表
 
@@ -167,6 +167,7 @@ Reasoning Content 只来自供应商响应的 `reasoning_content` 字段。并�
 - [ADR-018: Console traces fold successful inspection Tools by default](docs/decisions/018-console-traces-fold-inspection-tools.md)
 - [ADR-019: Model requests use transport default timeouts](docs/decisions/019-model-requests-use-transport-default-timeouts.md)
 - [ADR-020: Max Tokens is an optional Provider override](docs/decisions/020-max-tokens-is-an-optional-provider-override.md)
+- [ADR-022: Responses continue from durable Provider state](docs/decisions/022-responses-continue-from-durable-provider-state.md)
 
 ## 当前限制
 

@@ -74,7 +74,7 @@ export class MysqlAgentStore implements SessionStore, ProjectStore {
     )
     const [stepRows] = await this.pool.execute<StepRow[]>(
       `SELECT CAST(s.id AS CHAR) AS id, s.turn_id, s.step_number, s.status, s.output_kind,
-              s.assistant_content
+              s.assistant_content, s.provider_response_id
        FROM agent_steps AS s
        INNER JOIN agent_turns AS t ON t.id = s.turn_id
        WHERE t.session_id = ?
@@ -305,6 +305,7 @@ interface StepRow extends RowDataPacket {
   status: string
   output_kind: string
   assistant_content: string | null
+  provider_response_id: string | null
 }
 
 interface ToolCallRow extends RowDataPacket {
@@ -381,7 +382,7 @@ async function migrate(pool: Pool): Promise<void> {
     'SELECT MAX(version) AS version FROM agent_schema_migrations',
   )
   const version = rows[0]?.version ?? 0
-  if (version > 5) throw new Error(`Database schema version ${version} is newer than supported version 5`)
+  if (version > 6) throw new Error(`Database schema version ${version} is newer than supported version 6`)
 
   if (version < 1) {
     await pool.execute(`
@@ -586,6 +587,14 @@ async function migrate(pool: Pool): Promise<void> {
     `)
     await pool.execute('INSERT IGNORE INTO agent_schema_migrations (version) VALUES (5)')
   }
+
+  if (version < 6) {
+    await pool.execute(`
+      ALTER TABLE agent_steps
+        ADD COLUMN provider_response_id VARCHAR(255) NULL AFTER assistant_content
+    `)
+    await pool.execute('INSERT IGNORE INTO agent_schema_migrations (version) VALUES (6)')
+  }
 }
 
 async function lockSession(connection: PoolConnection, sessionId: string): Promise<void> {
@@ -736,9 +745,9 @@ async function applyRecord(
       if (record.calls.length === 0) throw new Error('A tool Step must contain at least one call')
       const [step] = await connection.execute<ResultSetHeader>(
         `INSERT INTO agent_steps
-           (turn_id, step_number, status, output_kind)
-         VALUES (?, ?, 'running', 'tool-call')`,
-        [record.turnId, record.step],
+           (turn_id, step_number, status, output_kind, provider_response_id)
+         VALUES (?, ?, 'running', 'tool-call', ?)`,
+        [record.turnId, record.step, record.providerResponseId ?? null],
       )
       for (const [callIndex, call] of record.calls.entries()) {
         await connection.execute(
@@ -760,9 +769,10 @@ async function applyRecord(
       await requireRunningTurn(connection, sessionId, record.turnId)
       await connection.execute(
         `INSERT INTO agent_steps
-           (turn_id, step_number, status, output_kind, assistant_content, completed_at)
-         VALUES (?, ?, 'completed', 'final', ?, CURRENT_TIMESTAMP(6))`,
-        [record.turnId, record.step, record.content],
+           (turn_id, step_number, status, output_kind, assistant_content,
+            provider_response_id, completed_at)
+         VALUES (?, ?, 'completed', 'final', ?, ?, CURRENT_TIMESTAMP(6))`,
+        [record.turnId, record.step, record.content, record.providerResponseId ?? null],
       )
       return
     case 'turn.completed': {
@@ -873,6 +883,9 @@ function toStep(row: StepRow, executions: readonly AgentToolExecution[]): AgentS
     return {
       stepNumber: row.step_number,
       status,
+      ...(row.provider_response_id === null
+        ? {}
+        : { providerResponseId: row.provider_response_id }),
       output: { kind: 'final', content: row.assistant_content },
     }
   }
@@ -883,6 +896,9 @@ function toStep(row: StepRow, executions: readonly AgentToolExecution[]): AgentS
   return {
     stepNumber: row.step_number,
     status,
+    ...(row.provider_response_id === null
+      ? {}
+      : { providerResponseId: row.provider_response_id }),
     output: { kind: 'tool-calls', executions },
   }
 }

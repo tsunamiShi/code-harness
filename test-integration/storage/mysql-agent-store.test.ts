@@ -69,6 +69,7 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
                 { id: 'call-2', name: 'search', arguments: { query: 'runtime' } },
               ],
               metadata: {
+                providerResponseId: 'response-1',
                 providerRequestId: 'provider-request-1',
                 finishReason: 'tool_calls',
                 usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
@@ -78,6 +79,7 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
               kind: 'final',
               content: '第一轮完成',
               metadata: {
+                providerResponseId: 'response-2',
                 providerRequestId: 'provider-request-2',
                 finishReason: 'stop',
                 usage: { inputTokens: 20, outputTokens: 4, totalTokens: 24 },
@@ -114,6 +116,8 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
     if (toolStep?.output.kind === 'tool-calls') {
       assert.equal(toolStep.output.executions.length, 2)
     }
+    assert.equal(toolStep?.providerResponseId, 'response-1')
+    assert.equal(snapshot?.turns[0]?.steps[1]?.providerResponseId, 'response-2')
     const [invocationRows] = await admin.query<(RowDataPacket & {
       status: string
       provider_name: string
@@ -177,10 +181,12 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
     const restoredProject = await new ProjectCatalog(store).get(project.id)
     assert.deepEqual(restoredProject, updatedProject)
     let restoredMessages: readonly Message[] = []
+    let restoredResponseId: string | undefined
     const resumed = await AgentSession.resume(sessionId, {
       model: {
         async generate(input) {
           restoredMessages = structuredClone(input.messages)
+          restoredResponseId = input.previousResponseId
           return { kind: 'final', content: '第二轮完成' }
         },
       },
@@ -190,19 +196,9 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
     })
     await resumed.send('第二轮')
 
+    assert.equal(restoredResponseId, 'response-2')
     assert.deepEqual(restoredMessages, [
       { role: 'system', content: projectInstructions(restoredProject) },
-      { role: 'user', content: '第一轮' },
-      {
-        role: 'assistant',
-        toolCalls: [
-          { id: 'call-1', name: 'search', arguments: { query: 'agent' } },
-          { id: 'call-2', name: 'search', arguments: { query: 'runtime' } },
-        ],
-      },
-      { role: 'tool', toolCallId: 'call-1', content: '测试结果' },
-      { role: 'tool', toolCallId: 'call-2', content: '测试结果' },
-      { role: 'assistant', content: '第一轮完成' },
       { role: 'user', content: '第二轮' },
     ])
 

@@ -629,3 +629,97 @@ test('returns a tool error to the model and restores it with the completed turn'
     { role: 'assistant', content: '无法读取该路径' },
   ])
 })
+
+test('continues Responses with only new function outputs and user input', async () => {
+  const requests: Array<{
+    messages: readonly Message[]
+    previousResponseId?: string
+  }> = []
+  let invocation = 0
+  const model: Model = {
+    async generate(input) {
+      requests.push({
+        messages: structuredClone(input.messages),
+        ...(input.previousResponseId === undefined
+          ? {}
+          : { previousResponseId: input.previousResponseId }),
+      })
+      invocation += 1
+      if (invocation === 1) {
+        return {
+          kind: 'tool-calls',
+          calls: [{ id: 'call-1', name: 'Read', arguments: { path: '/project/a.ts' } }],
+          metadata: { providerResponseId: 'response-1' },
+        }
+      }
+      return {
+        kind: 'final',
+        content: invocation === 2 ? 'first done' : 'second done',
+        metadata: { providerResponseId: `response-${invocation}` },
+      }
+    },
+  }
+  const read: Tool = {
+    description: { name: 'Read', description: 'Read a file.', parameters: {} },
+    async execute() {
+      return 'source'
+    },
+  }
+  const session = await AgentSession.create({
+    model,
+    tools: [read],
+    store: new MemorySessionStore(),
+  })
+
+  assert.equal(await session.send('first'), 'first done')
+  assert.equal(await session.send('second'), 'second done')
+  assert.deepEqual(requests, [
+    {
+      messages: [{ role: 'user', content: 'first' }],
+    },
+    {
+      messages: [{ role: 'tool', toolCallId: 'call-1', content: 'source' }],
+      previousResponseId: 'response-1',
+    },
+    {
+      messages: [{ role: 'user', content: 'second' }],
+      previousResponseId: 'response-2',
+    },
+  ])
+})
+
+test('restores the last Responses continuation after reopening a session', async () => {
+  const store = new MemorySessionStore()
+  const first = await AgentSession.create({
+    model: {
+      async generate() {
+        return {
+          kind: 'final',
+          content: 'first done',
+          metadata: { providerResponseId: 'response-persisted' },
+        }
+      },
+    },
+    tools: [],
+    store,
+  })
+  await first.send('first')
+
+  const resumed = await AgentSession.resume(first.id, {
+    model: {
+      async generate(input) {
+        assert.equal(input.previousResponseId, 'response-persisted')
+        assert.deepEqual(input.messages, [{ role: 'user', content: 'second' }])
+        return {
+          kind: 'final',
+          content: 'second done',
+          metadata: { providerResponseId: 'response-next' },
+        }
+      },
+    },
+    tools: [],
+    store,
+  })
+
+  assert.equal(await resumed.send('second'), 'second done')
+})

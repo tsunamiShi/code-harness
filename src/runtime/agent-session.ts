@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { projectInstructions, type AgentProject, type FilesystemAccessMode } from '../projects/project.ts'
 import { MemorySessionStore } from '../storage/memory-session-store.ts'
 import {
-  projectMessages,
+  projectModelState,
   recoverableTurn,
   type AgentTurn,
   type SessionStore,
@@ -70,6 +70,7 @@ export class AgentSession {
   private readonly toolsByName = new Map<string, Tool>()
   private readonly toolDescriptions: Tool['description'][]
   private readonly maxTokens: number | undefined
+  private providerContinuation: { responseId: string; syncedMessageCount: number } | undefined
   private recoverableTurnId: string | undefined
   private running = false
 
@@ -77,9 +78,11 @@ export class AgentSession {
     readonly id: string,
     private readonly options: AgentSessionOptions,
     messages: readonly Message[],
+    providerContinuation?: { responseId: string; syncedMessageCount: number },
     recoverableTurnId?: string,
   ) {
     this.messages = [...structuredClone(messages)]
+    this.providerContinuation = providerContinuation
     this.maxTokens = options.maxTokens
     this.recoverableTurnId = recoverableTurnId
     if (
@@ -111,10 +114,12 @@ export class AgentSession {
       throw new Error(`Session ${sessionId} does not belong to the supplied project`)
     }
     const unfinished = recoverableTurn(snapshot)
+    const state = projectModelState(snapshot)
     return new AgentSession(
       sessionId,
       options,
-      projectMessages(snapshot),
+      state.messages,
+      state.continuation,
       unfinished?.id,
     )
   }
@@ -175,7 +180,7 @@ export class AgentSession {
       const snapshot = await this.requireSnapshot()
       const turn = snapshot.turns.find(candidate => candidate.id === turnId)
       if (!turn || turn.status !== 'running') throw new Error(`Turn ${turnId} was not recovered`)
-      this.replaceMessages(projectMessages(snapshot))
+      this.replaceModelState(projectModelState(snapshot))
 
       const final = completedFinal(turn)
       if (final !== undefined) {
@@ -213,7 +218,7 @@ export class AgentSession {
     turnStartedAt: number,
   ): Promise<string> {
     for (let step = firstStep; ; step += 1) {
-      const messages = this.modelMessages()
+      const messages = this.requestMessages()
       const tools = this.toolDescriptions
       this.emit({
         type: 'step.started',
@@ -231,7 +236,11 @@ export class AgentSession {
           : { descriptor: this.options.model.descriptor }),
         messageCount: messages.length,
         toolCount: tools.length,
-        inputChars: JSON.stringify({ messages, tools }).length,
+        inputChars: JSON.stringify({
+          messages,
+          tools,
+          previousResponseId: this.providerContinuation?.responseId,
+        }).length,
         ...(this.maxTokens === undefined ? {} : { maxTokens: this.maxTokens }),
       })
       const modelStartedAt = performance.now()
@@ -241,6 +250,9 @@ export class AgentSession {
           messages,
           tools,
           ...(this.maxTokens === undefined ? {} : { maxTokens: this.maxTokens }),
+          ...(this.providerContinuation === undefined
+            ? {}
+            : { previousResponseId: this.providerContinuation.responseId }),
           onAttempt: async event => {
             await this.options.store.record(this.id, {
               type: 'model.attempt',
@@ -284,8 +296,12 @@ export class AgentSession {
           turnId,
           step,
           content: output.content,
+          ...(output.metadata?.providerResponseId === undefined
+            ? {}
+            : { providerResponseId: output.metadata.providerResponseId }),
         })
         this.messages.push({ role: 'assistant', content: output.content })
+        this.updateProviderContinuation(output)
         await this.options.store.record(this.id, { type: 'turn.completed', turnId })
         this.recoverableTurnId = undefined
         this.emit({
@@ -303,8 +319,12 @@ export class AgentSession {
         turnId,
         step,
         calls: output.calls,
+        ...(output.metadata?.providerResponseId === undefined
+          ? {}
+          : { providerResponseId: output.metadata.providerResponseId }),
       })
       this.messages.push({ role: 'assistant', toolCalls: structuredClone(output.calls) })
+      this.updateProviderContinuation(output)
 
       const executions = await this.executeToolCalls(turnId, step, output.calls)
       for (const execution of executions) {
@@ -337,8 +357,22 @@ export class AgentSession {
     return snapshot
   }
 
-  private replaceMessages(messages: readonly Message[]): void {
-    this.messages.splice(0, this.messages.length, ...structuredClone(messages))
+  private replaceModelState(state: ReturnType<typeof projectModelState>): void {
+    this.messages.splice(0, this.messages.length, ...structuredClone(state.messages))
+    this.providerContinuation = state.continuation
+  }
+
+  private requestMessages(): readonly Message[] {
+    if (this.providerContinuation === undefined) return this.modelMessages()
+    const delta = this.messages.slice(this.providerContinuation.syncedMessageCount)
+    if (!this.options.project) return delta
+    return [
+      {
+        role: 'system',
+        content: projectInstructions(this.options.project, this.options.accessMode),
+      },
+      ...delta,
+    ]
   }
 
   private modelMessages(): readonly Message[] {
@@ -350,6 +384,13 @@ export class AgentSession {
       },
       ...this.messages,
     ]
+  }
+
+  private updateProviderContinuation(output: ModelOutput): void {
+    const responseId = output.metadata?.providerResponseId
+    this.providerContinuation = responseId === undefined
+      ? undefined
+      : { responseId, syncedMessageCount: this.messages.length }
   }
 
   private async executeToolCalls(

@@ -27,6 +27,7 @@ export interface ModelUsage {
 
 export interface ModelResponseMetadata {
   providerRequestId?: string
+  providerResponseId?: string
   finishReason?: string
   usage?: ModelUsage
 }
@@ -72,6 +73,7 @@ export interface Model {
     messages: readonly Message[]
     tools: readonly ToolDescription[]
     maxTokens?: number
+    previousResponseId?: string
     onAttempt?: (event: ModelAttemptEvent) => Promise<void>
   }): Promise<ModelOutput>
 }

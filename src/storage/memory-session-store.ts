@@ -58,6 +58,9 @@ export class MemorySessionStore implements SessionStore {
       turn.steps.push({
         stepNumber: record.step,
         status: 'running',
+        ...(record.providerResponseId === undefined
+          ? {}
+          : { providerResponseId: record.providerResponseId }),
         output: {
           kind: 'tool-calls',
           executions: record.calls.map(call => ({
@@ -74,6 +77,9 @@ export class MemorySessionStore implements SessionStore {
       turn.steps.push({
         stepNumber: record.step,
         status: 'completed',
+        ...(record.providerResponseId === undefined
+          ? {}
+          : { providerResponseId: record.providerResponseId }),
         output: { kind: 'final', content: record.content },
       })
       return

@@ -21,6 +21,7 @@ export interface AgentToolExecution {
 export interface AgentStep {
   stepNumber: number
   status: StepStatus
+  providerResponseId?: string
   output:
     | { kind: 'final'; content: string }
     | { kind: 'tool-calls'; executions: readonly AgentToolExecution[] }
@@ -77,7 +78,13 @@ export type SessionRecord =
       errorName: string
       error: string
     }
-  | { type: 'step.tools-called'; turnId: string; step: number; calls: readonly ToolCall[] }
+  | {
+      type: 'step.tools-called'
+      turnId: string
+      step: number
+      calls: readonly ToolCall[]
+      providerResponseId?: string
+    }
   | {
       type: 'step.tool-completed'
       turnId: string
@@ -92,7 +99,13 @@ export type SessionRecord =
       toolCallId: string
       error: string
     }
-  | { type: 'step.finalized'; turnId: string; step: number; content: string }
+  | {
+      type: 'step.finalized'
+      turnId: string
+      step: number
+      content: string
+      providerResponseId?: string
+    }
   | { type: 'turn.completed'; turnId: string }
   | { type: 'turn.failed'; turnId: string; error: string }
 
@@ -104,6 +117,16 @@ export interface SessionStore {
   recoverTurn(sessionId: string, turnId: string, interruptedToolError: string): Promise<void>
 }
 
+export interface ProviderContinuation {
+  responseId: string
+  syncedMessageCount: number
+}
+
+export interface ProjectedModelState {
+  messages: readonly Message[]
+  continuation?: ProviderContinuation
+}
+
 /** Returns the final unfinished Turn, if recovery must precede a new Turn. */
 export function recoverableTurn(snapshot: AgentSessionSnapshot): AgentTurn | undefined {
   const turn = snapshot.turns.at(-1)
@@ -112,7 +135,13 @@ export function recoverableTurn(snapshot: AgentSessionSnapshot): AgentTurn | und
 
 /** Builds model-visible history from completed Turns and durable work in the final unfinished Turn. */
 export function projectMessages(snapshot: AgentSessionSnapshot): readonly Message[] {
+  return projectModelState(snapshot).messages
+}
+
+/** Projects durable Messages and the last Provider response that contains their prefix. */
+export function projectModelState(snapshot: AgentSessionSnapshot): ProjectedModelState {
   const messages: Message[] = []
+  let continuation: ProviderContinuation | undefined
   const unfinished = recoverableTurn(snapshot)
 
   for (const turn of snapshot.turns) {
@@ -123,6 +152,9 @@ export function projectMessages(snapshot: AgentSessionSnapshot): readonly Messag
       if (step.output.kind === 'final') {
         if (step.status === 'completed') {
           messages.push({ role: 'assistant', content: step.output.content })
+          continuation = step.providerResponseId === undefined
+            ? undefined
+            : { responseId: step.providerResponseId, syncedMessageCount: messages.length }
         }
         continue
       }
@@ -131,6 +163,9 @@ export function projectMessages(snapshot: AgentSessionSnapshot): readonly Messag
         role: 'assistant',
         toolCalls: step.output.executions.map(execution => execution.call),
       })
+      continuation = step.providerResponseId === undefined
+        ? undefined
+        : { responseId: step.providerResponseId, syncedMessageCount: messages.length }
       for (const execution of step.output.executions) {
         const toolResult = execution.result ?? execution.error
         if (toolResult === undefined) continue
@@ -143,5 +178,8 @@ export function projectMessages(snapshot: AgentSessionSnapshot): readonly Messag
     }
   }
 
-  return messages
+  return {
+    messages,
+    ...(continuation === undefined ? {} : { continuation }),
+  }
 }

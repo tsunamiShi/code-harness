@@ -1,7 +1,7 @@
 import { stdin, stdout } from 'node:process'
 import { createInterface } from 'node:readline/promises'
 
-import { OpenAICompatibleChatModel } from '../models/openai-compatible-chat-model.ts'
+import { OpenAICompatibleResponsesModel } from '../models/openai-compatible-responses-model.ts'
 import { primaryRoot, ProjectCatalog } from '../projects/project.ts'
 import { AgentSession } from '../runtime/agent-session.ts'
 import { MysqlAgentStore } from '../storage/mysql-agent-store.ts'
@@ -26,7 +26,7 @@ const tools = createCodeTools(project, target.accessMode)
 const traceMode = agentTraceModeFromEnvironment()
 const maxTokens = agentMaxTokensFromEnvironment()
 const sessionOptions = {
-  model: new OpenAICompatibleChatModel({
+  model: new OpenAICompatibleResponsesModel({
     apiKey: requiredEnvironment('DASHSCOPE_API_KEY'),
     baseURL: requiredEnvironment('DASHSCOPE_BASE_URL'),
     model: requiredEnvironment('DASHSCOPE_MODEL'),
