@@ -4,6 +4,8 @@
 
 Accepted
 
+The default Console Trace presentation is refined by [ADR-018](018-console-traces-fold-inspection-tools.md); Runtime event ownership remains accepted.
+
 ## Date
 
 2026-09-17
@@ -18,7 +20,7 @@ The OpenAI-compatible provider can return a non-standard `reasoning_content` fie
 
 `AgentSession` emits typed `AgentEvent` observations through one optional synchronous callback. Events describe Turn start and completion, Step start, model completion, Tool Call Batch scheduling, individual Tool start and completion, durations, content, and failures. The Runtime emits facts but owns no terminal formatting.
 
-The CLI installs a Console Trace Adapter that renders the events as a readable timeline. It prints complete model Final Content and provider-returned Reasoning Content. Tool Result display is limited to 4,000 characters to keep the interactive terminal usable; storage and model feedback retain the complete value.
+The CLI installs a Console Trace Adapter that renders the events as a readable timeline. It prints complete model Final Content and provider-returned Reasoning Content. The original presentation printed every Tool Result with a 4,000-character display limit; ADR-018 adds compact and verbose presentation modes. Storage and model feedback retain the complete value in either mode.
 
 `ModelOutput.reasoningContent` is optional and is populated only when the provider response contains a non-empty `reasoning_content` string. A Tool Call response can also carry optional provider Content, which the trace displays instead of discarding. Reasoning absence is printed explicitly. Tool-call Content, Reasoning Content, and timing are transient observations in this version and are not projected into Messages or persisted as Session Records.
 

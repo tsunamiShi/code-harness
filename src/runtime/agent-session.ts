@@ -10,7 +10,6 @@ import {
 } from './session-store.ts'
 import type { Message, Model, ModelOutput, Tool, ToolCall } from './types.ts'
 
-const DEFAULT_MAX_TOKENS = 4_096
 const INTERRUPTED_TOOL_ERROR = 'Error: execution stopped before this Tool result was persisted; the Tool was not run again because its side effects are unknown'
 
 export interface AgentSessionOptions {
@@ -70,7 +69,7 @@ export class AgentSession {
   private readonly messages: Message[]
   private readonly toolsByName = new Map<string, Tool>()
   private readonly toolDescriptions: Tool['description'][]
-  private readonly maxTokens: number
+  private readonly maxTokens: number | undefined
   private recoverableTurnId: string | undefined
   private running = false
 
@@ -81,9 +80,12 @@ export class AgentSession {
     recoverableTurnId?: string,
   ) {
     this.messages = [...structuredClone(messages)]
-    this.maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS
+    this.maxTokens = options.maxTokens
     this.recoverableTurnId = recoverableTurnId
-    if (!Number.isSafeInteger(this.maxTokens) || this.maxTokens < 1) {
+    if (
+      this.maxTokens !== undefined
+      && (!Number.isSafeInteger(this.maxTokens) || this.maxTokens < 1)
+    ) {
       throw new Error('maxTokens must be a positive safe integer')
     }
 
@@ -230,7 +232,7 @@ export class AgentSession {
         messageCount: messages.length,
         toolCount: tools.length,
         inputChars: JSON.stringify({ messages, tools }).length,
-        maxTokens: this.maxTokens,
+        ...(this.maxTokens === undefined ? {} : { maxTokens: this.maxTokens }),
       })
       const modelStartedAt = performance.now()
       let output: ModelOutput
@@ -238,7 +240,7 @@ export class AgentSession {
         output = await this.options.model.generate({
           messages,
           tools,
-          maxTokens: this.maxTokens,
+          ...(this.maxTokens === undefined ? {} : { maxTokens: this.maxTokens }),
           onAttempt: async event => {
             await this.options.store.record(this.id, {
               type: 'model.attempt',

@@ -109,7 +109,7 @@ test('emits an observable execution chain with provider reasoning and tool conte
 
 test('does not impose a Step limit and applies maxTokens to every model invocation', async () => {
   let request = 0
-  const observedMaxTokens: number[] = []
+  const observedMaxTokens: Array<number | undefined> = []
   const model: Model = {
     async generate(input) {
       observedMaxTokens.push(input.maxTokens)
@@ -140,6 +140,19 @@ test('does not impose a Step limit and applies maxTokens to every model invocati
   )
   assert.equal(request, 52)
   assert.deepEqual(new Set(observedMaxTokens), new Set([4096]))
+})
+
+test('does not impose a model output token limit by default', async () => {
+  let observedMaxTokens: number | undefined = 0
+  const model: Model = {
+    async generate(input) {
+      observedMaxTokens = input.maxTokens
+      return { kind: 'final', content: 'done' }
+    },
+  }
+
+  assert.equal(await runAgent({ model, tools: [], prompt: 'hello' }), 'done')
+  assert.equal(observedMaxTokens, undefined)
 })
 
 test('allows ten tool steps followed by a final answer', async () => {

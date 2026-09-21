@@ -120,7 +120,7 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
       model_name: string
       input_tokens: number
       total_tokens: number
-      max_tokens: number
+      max_tokens: number | null
     })[]>(
       `SELECT status, provider_name, model_name, input_tokens, total_tokens, max_tokens
        FROM \`${database}\`.agent_model_invocations
@@ -134,7 +134,7 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
         model_name: 'integration-model',
         input_tokens: 10,
         total_tokens: 15,
-        max_tokens: 4096,
+        max_tokens: null,
       },
       {
         status: 'completed',
@@ -142,7 +142,7 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
         model_name: 'integration-model',
         input_tokens: 20,
         total_tokens: 24,
-        max_tokens: 4096,
+        max_tokens: null,
       },
     ])
     const [attemptRows] = await admin.query<(RowDataPacket & {

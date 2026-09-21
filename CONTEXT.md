@@ -113,7 +113,7 @@ Runtime 请求 Model 产生下一个 Step 的一次逻辑调用。一次 Model I
 _Avoid_: Provider Attempt、Step
 
 **Max Tokens**:
-一次 Model Invocation 最多允许模型生成的 Token 数。它不累计整个 Turn 或 Agent 任务的 Token 消耗，也不限制 Step 数量。
+可选的单次 Model Invocation 输出 Token 上限。未配置时 Runtime 不设置该上限，由 Provider 和 Model 决定默认值；配置后也不累计整个 Turn 或 Agent 任务的 Token 消耗，不限制 Step 数量。
 _Avoid_: Turn Budget、Context Window
 
 **Provider Attempt**:
@@ -127,6 +127,10 @@ _Avoid_: Message、Session Record
 **Execution Trace**:
 一个 Turn 的 Agent Events 按发生顺序形成的可观察执行链路，包括 Model Invocation、Provider Attempt、模型输出、Tool Call、Tool Result、耗时和最终状态。
 _Avoid_: Message History、Model Context
+
+**Trace Mode**:
+CLI 对同一组 Agent Events 的展示密度。`compact` 折叠成功的只读感知工具，`verbose` 展示每个 Tool Call 的完整参数与结果；不改变持久化或模型上下文。
+_Avoid_: Log Level、Tool Policy
 
 **Reasoning Content**:
 模型供应商在响应中显式返回的推理文本。Runtime 只透传真实字段；供应商未返回时明确显示 unavailable，不从 Final Content 推测或生成。

@@ -52,7 +52,7 @@ export type SessionRecord =
       messageCount: number
       toolCount: number
       inputChars: number
-      maxTokens: number
+      maxTokens?: number
     }
   | {
       type: 'model.attempt'

@@ -11,6 +11,7 @@ import { createConsoleTrace } from './console-trace.ts'
 import { createMarkdownRenderer } from './markdown.ts'
 import {
   agentMaxTokensFromEnvironment,
+  agentTraceModeFromEnvironment,
   mysqlOptionsFromEnvironment,
   requiredEnvironment,
 } from './config.ts'
@@ -22,6 +23,8 @@ const project = target.kind === 'project'
   ? await catalog.get(target.id)
   : await projectForSession(target.id)
 const tools = createCodeTools(project, target.accessMode)
+const traceMode = agentTraceModeFromEnvironment()
+const maxTokens = agentMaxTokensFromEnvironment()
 const sessionOptions = {
   model: new OpenAICompatibleChatModel({
     apiKey: requiredEnvironment('DASHSCOPE_API_KEY'),
@@ -32,9 +35,10 @@ const sessionOptions = {
   store,
   project,
   accessMode: target.accessMode,
-  maxTokens: agentMaxTokensFromEnvironment(),
+  ...(maxTokens === undefined ? {} : { maxTokens }),
   onEvent: createConsoleTrace({
     write: text => console.log(text),
+    mode: traceMode,
     colors: stdout.isTTY && process.env.NO_COLOR === undefined,
     renderMarkdown: createMarkdownRenderer({
       width: Math.max(40, (stdout.columns ?? 100) - 8),
@@ -49,6 +53,7 @@ const terminal = createInterface({ input: stdin, output: stdout })
 console.log(`Project: ${project.name}`)
 console.log(`Working directory: ${primaryRoot(project).path}`)
 console.log(`Filesystem access: ${target.accessMode}`)
+console.log(`Trace: ${traceMode}`)
 console.log(`Session: ${session.id}`)
 console.log('Enter /exit to quit or /retry to continue a failed Turn. Resume later with: pnpm chat -- --session <session-id>')
 

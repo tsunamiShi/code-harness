@@ -4,11 +4,12 @@ import test from 'node:test'
 import { createConsoleTrace } from '../../src/cli/console-trace.ts'
 import type { AgentEvent } from '../../src/runtime/agent-session.ts'
 
-test('renders model reasoning, tool arguments, result content, and turn summary', () => {
+test('verbose mode renders model reasoning, tool arguments, result content, and turn summary', () => {
   const output: string[] = []
   const trace = createConsoleTrace({
     write: text => output.push(text),
     colors: false,
+    mode: 'verbose',
     maxToolResultChars: 8,
   })
   const events: AgentEvent[] = [
@@ -56,6 +57,59 @@ test('renders model reasoning, tool arguments, result content, and turn summary'
   assert.match(rendered, /"path": "src\/app\.ts"/)
   assert.match(rendered, /12345678\n│    … 2 more characters omitted/)
   assert.match(rendered, /Turn completed 1 steps · 1\.30s/)
+})
+
+test('compact mode folds successful inspection Tools into one summary', () => {
+  const output: string[] = []
+  const trace = createConsoleTrace({ write: text => output.push(text), colors: false })
+  const read = (id: string, path: string, durationMs: number): AgentEvent => ({
+    type: 'tool.completed',
+    turnId: 'turn',
+    step: 1,
+    call: { id, name: 'Read', arguments: { path } },
+    durationMs,
+    failed: false,
+    content: `full source for ${path}`,
+  })
+
+  trace({ type: 'tool.batch-started', turnId: 'turn', step: 1, mode: 'parallel', count: 2 })
+  trace({
+    type: 'tool.started',
+    turnId: 'turn',
+    step: 1,
+    call: { id: 'read-a', name: 'Read', arguments: { path: '/project/src/a.ts' } },
+  })
+  trace(read('read-a', '/project/src/a.ts', 12))
+  trace(read('read-b', '/project/src/b.ts', 25))
+  trace({ type: 'step.started', turnId: 'turn', step: 2, messageCount: 5, toolCount: 7 })
+
+  const rendered = output.join('\n')
+  assert.match(rendered, /Inspected 2 · Read ×2/)
+  assert.match(rendered, /\/project\/src\/a\.ts, \/project\/src\/b\.ts/)
+  assert.match(rendered, /slowest 25ms/)
+  assert.doesNotMatch(rendered, /Arguments/)
+  assert.doesNotMatch(rendered, /full source/)
+  assert.doesNotMatch(rendered, /tool batch/)
+})
+
+test('compact mode expands failed inspection Tools', () => {
+  const output: string[] = []
+  const trace = createConsoleTrace({ write: text => output.push(text), colors: false })
+
+  trace({
+    type: 'tool.completed',
+    turnId: 'turn',
+    step: 1,
+    call: { id: 'read-failed', name: 'Read', arguments: { path: '/missing.ts' } },
+    durationMs: 3,
+    failed: true,
+    content: 'Error: file not found',
+  })
+
+  const rendered = output.join('\n')
+  assert.match(rendered, /Read read-failed/)
+  assert.match(rendered, /"path": "\/missing\.ts"/)
+  assert.match(rendered, /Error: file not found/)
 })
 
 test('states when the provider returns no reasoning content', () => {

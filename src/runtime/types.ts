@@ -71,7 +71,7 @@ export interface Model {
   generate(input: {
     messages: readonly Message[]
     tools: readonly ToolDescription[]
-    maxTokens: number
+    maxTokens?: number
     onAttempt?: (event: ModelAttemptEvent) => Promise<void>
   }): Promise<ModelOutput>
 }

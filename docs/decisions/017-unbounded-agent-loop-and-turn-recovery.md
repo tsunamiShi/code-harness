@@ -20,7 +20,7 @@ The Runtime still needs to prevent one model response from producing unbounded t
 
 Run the Agent Loop until the model returns a final answer or an exception interrupts the Turn. Do not limit the number of Steps and do not remove Tools from a model request based on iteration count.
 
-Pass `maxTokens` to every `Model.generate()` call. The OpenAI-compatible Adapter sends it as `max_tokens`; `AGENT_MAX_TOKENS` defaults to 4096. This is an independent output limit for each Model Invocation, not a cumulative Turn budget. A response with `finish_reason=length` is an incomplete Invocation and fails the Turn instead of becoming a final answer.
+Pass the configured `maxTokens` to every `Model.generate()` call. The OpenAI-compatible Adapter sends it as `max_tokens`. This is an independent output limit for each Model Invocation, not a cumulative Turn budget. A response with `finish_reason=length` is an incomplete Invocation and fails the Turn instead of becoming a final answer. ADR-020 supersedes this decision's original 4096-token default and makes the limit optional.
 
 Keep every successfully persisted Step in the model-visible projection of the final `failed` or `running` Turn. A Session with such a Turn must continue it before accepting another user prompt. `continueTurn()` reopens the same Turn, reconstructs Messages from storage, and resumes at the first Step that has no durable model decision. MySQL schema version 5 allows multiple Model Invocations for one Step so a failed request and its later retry remain independently observable.
 
@@ -47,7 +47,7 @@ This keeps storage transitions simple but inserts another user message and loses
 ## Consequences
 
 - Long tasks can use as many model-and-tool Steps as needed to reach a final answer.
-- Each model response is bounded independently; total task time and token consumption are intentionally not bounded by this decision.
+- A configured output limit bounds each model response independently; total task time and token consumption are intentionally not bounded by this decision.
 - Provider failures preserve prior exploration and can retry the same logical Step without overwriting Invocation history.
 - Reconnecting with `--session` automatically continues the final unfinished Turn; `/retry` repeats recovery after another failure.
 - A recovered Tool Error reports uncertainty rather than claiming whether an interrupted side effect occurred.

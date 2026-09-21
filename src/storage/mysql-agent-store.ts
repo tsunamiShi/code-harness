@@ -653,7 +653,7 @@ async function applyRecord(
           record.messageCount,
           record.toolCount,
           record.inputChars,
-          record.maxTokens,
+          record.maxTokens ?? null,
         ],
       )
       return

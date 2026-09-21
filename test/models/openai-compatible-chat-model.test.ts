@@ -1,8 +1,22 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
+import OpenAI from 'openai'
+
 import { OpenAICompatibleChatModel } from '../../src/models/openai-compatible-chat-model.ts'
 import type { ModelAttemptEvent } from '../../src/runtime/types.ts'
+
+test('does not impose an application-level model request timeout by default', () => {
+  const model = new OpenAICompatibleChatModel({
+    apiKey: 'test-key',
+    baseURL: 'https://provider.example/compatible-mode/v1',
+    model: 'test-model',
+  })
+
+  assert.equal(Reflect.has(model.descriptor, 'requestTimeoutMs'), false)
+  const client = Reflect.get(model, 'client')
+  assert.equal(Reflect.get(client as object, 'timeout'), OpenAI.DEFAULT_TIMEOUT)
+})
 
 test('reports every provider attempt and completion usage', async () => {
   let requests = 0
@@ -100,6 +114,41 @@ test('reports every provider attempt and completion usage', async () => {
       },
     },
   })
+})
+
+test('omits max_tokens when no output token limit is configured', async () => {
+  let requestBody: unknown
+  const model = new OpenAICompatibleChatModel({
+    apiKey: 'test-key',
+    baseURL: 'https://provider.example/compatible-mode/v1',
+    model: 'test-model',
+    maxRetries: 0,
+    fetch: async (_input, init) => {
+      requestBody = JSON.parse(String(init?.body))
+      return new Response(JSON.stringify({
+        id: 'completion-with-provider-default',
+        object: 'chat.completion',
+        created: 1,
+        model: 'test-model',
+        choices: [{
+          index: 0,
+          finish_reason: 'stop',
+          logprobs: null,
+          message: { role: 'assistant', content: 'done' },
+        }],
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    },
+  })
+
+  await model.generate({
+    messages: [{ role: 'user', content: 'hello' }],
+    tools: [],
+  })
+
+  assert.equal(Reflect.has(requestBody as object, 'max_tokens'), false)
 })
 
 test('rejects a response truncated by the per-invocation token limit', async () => {

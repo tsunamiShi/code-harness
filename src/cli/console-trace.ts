@@ -1,10 +1,13 @@
 import type { AgentEvent } from '../runtime/agent-session.ts'
+import type { AgentTraceMode } from './config.ts'
 
 const DEFAULT_MAX_TOOL_RESULT_CHARS = 4_000
+const COLLAPSIBLE_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LSP'])
 
 export interface ConsoleTraceOptions {
   write: (text: string) => void
   colors?: boolean
+  mode?: AgentTraceMode
   maxToolResultChars?: number
   renderMarkdown?: (source: string) => string
 }
@@ -12,9 +15,37 @@ export interface ConsoleTraceOptions {
 /** Formats Agent runtime events as a readable terminal execution timeline. */
 export function createConsoleTrace(options: ConsoleTraceOptions): (event: AgentEvent) => void {
   const color = createColor(options.colors === true)
+  const mode = options.mode ?? 'compact'
   const maxToolResultChars = options.maxToolResultChars ?? DEFAULT_MAX_TOOL_RESULT_CHARS
+  let collapsedTools: ToolCompletedEvent[] = []
+
+  const flushCollapsedTools = (): void => {
+    if (collapsedTools.length === 0) return
+    const tools = collapsedTools
+    collapsedTools = []
+    const counts = new Map<string, number>()
+    for (const event of tools) counts.set(event.call.name, (counts.get(event.call.name) ?? 0) + 1)
+    const names = [...counts].map(([name, count]) => count === 1 ? name : `${name} ×${count}`)
+    const slowest = Math.max(...tools.map(event => event.durationMs))
+    const details = tools.length <= 3
+      ? ` · ${tools.map(event => compactToolTarget(event)).join(', ')}`
+      : ''
+    options.write(
+      `│  ${color.green('✓')} ${color.bold(`Inspected ${tools.length}`)} · ${names.join(', ')}${details} ${color.dim(`· slowest ${formatDuration(slowest)}`)}`,
+    )
+  }
 
   return event => {
+    if (
+      event.type === 'turn.started'
+      || event.type === 'turn.resumed'
+      || event.type === 'step.started'
+      || event.type === 'turn.completed'
+      || event.type === 'turn.failed'
+      || event.type === 'tool.batch-started'
+    ) {
+      flushCollapsedTools()
+    }
     switch (event.type) {
       case 'turn.started':
         options.write(`\n${color.bold('┌─ Turn started')} ${color.dim(shortId(event.turnId))}`)
@@ -51,26 +82,24 @@ export function createConsoleTrace(options: ConsoleTraceOptions): (event: AgentE
         }
         return
       case 'tool.batch-started':
+        if (mode === 'compact') return
         options.write(
           `│  ${event.mode === 'parallel' ? color.yellow('⚡ parallel') : color.yellow('→ serial')} tool batch · ${event.count} call${event.count === 1 ? '' : 's'}`,
         )
         return
       case 'tool.started':
-        options.write(`│  ${color.yellow('▶')} ${color.bold(event.call.name)} ${color.dim(event.call.id)}`)
-        options.write(block('Arguments', formatValue(event.call.arguments), color.cyan))
+        if (mode === 'compact' && COLLAPSIBLE_TOOLS.has(event.call.name)) return
+        renderToolStarted(options.write, color, event)
         return
       case 'tool.completed': {
-        const marker = event.failed ? color.red('✗') : color.green('✓')
-        options.write(
-          `│  ${marker} ${color.bold(event.call.name)} ${event.failed ? 'failed' : 'completed'} ${color.dim(formatDuration(event.durationMs))}`,
-        )
-        options.write(
-          block(
-            event.failed ? 'Error' : 'Result',
-            truncate(event.content, maxToolResultChars),
-            event.failed ? color.red : color.dim,
-          ),
-        )
+        if (mode === 'compact' && COLLAPSIBLE_TOOLS.has(event.call.name)) {
+          if (!event.failed) {
+            collapsedTools.push(event)
+            return
+          }
+          renderToolStarted(options.write, color, event)
+        }
+        renderToolCompleted(options.write, color, event, maxToolResultChars)
         return
       }
       case 'turn.completed':
@@ -84,6 +113,66 @@ export function createConsoleTrace(options: ConsoleTraceOptions): (event: AgentE
         return
     }
   }
+}
+
+type ToolStartedEvent = Extract<AgentEvent, { type: 'tool.started' }>
+type ToolCompletedEvent = Extract<AgentEvent, { type: 'tool.completed' }>
+
+function renderToolStarted(
+  write: (text: string) => void,
+  color: ReturnType<typeof createColor>,
+  event: ToolStartedEvent | ToolCompletedEvent,
+): void {
+  write(`│  ${color.yellow('▶')} ${color.bold(event.call.name)} ${color.dim(event.call.id)}`)
+  write(block('Arguments', formatValue(event.call.arguments), color.cyan))
+}
+
+function renderToolCompleted(
+  write: (text: string) => void,
+  color: ReturnType<typeof createColor>,
+  event: ToolCompletedEvent,
+  maxToolResultChars: number,
+): void {
+  const marker = event.failed ? color.red('✗') : color.green('✓')
+  write(
+    `│  ${marker} ${color.bold(event.call.name)} ${event.failed ? 'failed' : 'completed'} ${color.dim(formatDuration(event.durationMs))}`,
+  )
+  write(
+    block(
+      event.failed ? 'Error' : 'Result',
+      truncate(event.content, maxToolResultChars),
+      event.failed ? color.red : color.dim,
+    ),
+  )
+}
+
+function compactToolTarget(event: ToolCompletedEvent): string {
+  const input = isRecord(event.call.arguments) ? event.call.arguments : {}
+  const path = typeof input.path === 'string' ? compactPath(input.path) : undefined
+  if (event.call.name === 'Read') return path ?? event.call.id
+  if (event.call.name === 'Glob') {
+    const pattern = typeof input.pattern === 'string' ? input.pattern : undefined
+    return [path, pattern].filter(value => value !== undefined).join(' · ') || event.call.id
+  }
+  if (event.call.name === 'Grep') {
+    const pattern = typeof input.pattern === 'string' ? `/${input.pattern}/` : undefined
+    return [path, pattern].filter(value => value !== undefined).join(' · ') || event.call.id
+  }
+  if (event.call.name === 'LSP') {
+    const operation = typeof input.operation === 'string' ? input.operation : undefined
+    return [operation, path].filter(value => value !== undefined).join(' · ') || event.call.id
+  }
+  return event.call.id
+}
+
+function compactPath(path: string): string {
+  const parts = path.split('/').filter(Boolean)
+  if (parts.length <= 3) return path
+  return `…/${parts.slice(-3).join('/')}`
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function block(label: string, content: string, decorate: (value: string) => string): string {

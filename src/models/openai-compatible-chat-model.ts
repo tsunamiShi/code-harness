@@ -35,7 +35,6 @@ export class OpenAICompatibleChatModel implements Model {
   readonly descriptor;
 
   constructor(private readonly options: OpenAICompatibleChatModelOptions) {
-    const requestTimeoutMs = options.timeoutMs ?? 30_000;
     const maxRetries = options.maxRetries ?? 1;
     const provider = new URL(options.baseURL).hostname;
     const baseFetch = options.fetch ?? globalThis.fetch;
@@ -43,13 +42,13 @@ export class OpenAICompatibleChatModel implements Model {
       provider,
       model: options.model,
       protocol: "openai-chat-completions",
-      requestTimeoutMs,
+      ...(options.timeoutMs === undefined ? {} : { requestTimeoutMs: options.timeoutMs }),
       maxRetries,
     };
     this.client = new OpenAI({
       apiKey: options.apiKey,
       baseURL: options.baseURL,
-      timeout: requestTimeoutMs,
+      ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }),
       maxRetries,
       fetch: async (input, init) => await this.observedFetch(baseFetch, input, init),
     });
@@ -58,14 +57,14 @@ export class OpenAICompatibleChatModel implements Model {
   async generate(input: {
     messages: readonly Message[];
     tools: readonly ToolDescription[];
-    maxTokens: number;
+    maxTokens?: number;
     onAttempt?: (event: ModelAttemptEvent) => Promise<void>;
   }): Promise<ModelOutput> {
     const { data: completion, request_id: requestId } = await this.attemptContext.run(
       { nextAttempt: 0, ...(input.onAttempt === undefined ? {} : { onAttempt: input.onAttempt }) },
       async () => await this.client.chat.completions.create({
         model: this.options.model,
-        max_tokens: input.maxTokens,
+        ...(input.maxTokens === undefined ? {} : { max_tokens: input.maxTokens }),
         messages: input.messages.map(toProviderMessage),
         ...(input.tools.length === 0
           ? {}
@@ -103,7 +102,9 @@ export class OpenAICompatibleChatModel implements Model {
     const reasoningContent = readReasoningContent(message);
     const content = message.content ?? undefined;
     if (completion.choices[0]?.finish_reason === "length") {
-      throw new Error(`Model response reached the ${input.maxTokens}-token output limit before completing`);
+      throw new Error(input.maxTokens === undefined
+        ? "Model response reached the provider output token limit before completing"
+        : `Model response reached the ${input.maxTokens}-token output limit before completing`);
     }
     if (calls.length > 0) {
       return {

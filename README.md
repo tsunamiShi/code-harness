@@ -54,7 +54,7 @@ CLI 在 Scoped 模式暴露六个代码工具：
 
 Full Access 模式额外暴露 `Bash`。它要求一个绝对 `cwd`，返回退出码、信号、stdout、stderr、超时和截断信息；非零退出属于可供模型修正的执行结果。当前默认超时 30 秒、最大 120 秒，stdout/stderr 各最多返回 64,000 字符。
 
-模型可以在同一个 Step 返回多个 Tool Calls。`Read / Glob / Grep` 声明为 parallel-safe，因此同批调用会并行执行并按模型给出的顺序写回结果。Agent Loop 不限制 Step 数量；`.env` 中的 `AGENT_MAX_TOKENS` 只限制每次 Model Invocation 的最大输出，默认是 4096，不累计整个 Turn 的消耗。供应商以 `finish_reason=length` 截断响应时，Runtime 将本次调用视为失败，不把不完整文本误判成最终答案。
+模型可以在同一个 Step 返回多个 Tool Calls。`Read / Glob / Grep` 声明为 parallel-safe，因此同批调用会并行执行并按模型给出的顺序写回结果。Agent Loop 不限制 Step 数量；`AGENT_MAX_TOKENS` 是可选的单次 Model Invocation 输出上限，未配置时不发送 `max_tokens`，由 Provider 和 Model 决定默认值。显式配置的上限不累计整个 Turn 的消耗。供应商以 `finish_reason=length` 截断响应时，Runtime 将本次调用视为失败，不把不完整文本误判成最终答案。
 
 Turn 中每个完成的 Tool Call 都会立即持久化。模型请求或进程异常后，Session 保留同一个 Turn 的用户输入、已完成 Tool Calls 和 Tool Results；使用 `--session` 重连时 CLI 自动继续该 Turn，失败后也可输入 `/retry` 再试。进程退出时仍处于 running 且结果尚未持久化的 Tool Call 不会被自动重放，因为 `Edit` 或 `Bash` 可能已经产生副作用；恢复过程会为它写入“结果未知”的 Tool Error，让模型检查当前状态后继续。
 
@@ -127,7 +127,9 @@ CLI 会显示 Primary Root 和新 Session ID。正常退出后可以恢复：
 pnpm chat -- --session <session-id>
 ```
 
-每个 Turn 会打印结构化 Execution Trace：Step 编号、模型请求中的 Message/Tool 数量、模型耗时、供应商返回的 Reasoning Content、Tool Call 参数、串行或并行调度方式、Tool Result、最终 Content 和 Turn 总耗时。Final Content 会把模型返回的 Markdown 渲染成适合当前终端宽度的标题、列表、强调、代码块、表格和链接预览；数据库仍保存原始 Markdown。Tool Result 在终端最多显示 4,000 字符，完整结果仍会写入数据库并反馈给模型。MySQL 还会持久化 Model Invocation 的输入规模、Token Usage、结束原因和错误，以及每次实际 Provider Attempt 的 HTTP 状态、Request ID、错误与时间。
+每个 Turn 会打印结构化 Execution Trace：Step 编号、模型请求中的 Message/Tool 数量、模型耗时、供应商返回的 Reasoning Content、Tool 执行、最终 Content 和 Turn 总耗时。默认 `AGENT_TRACE=compact`，同一批成功的 `Read / Glob / Grep / LSP` 会折叠成单行数量、类型、少量目标和最慢耗时；失败会自动展开，`Edit / Write / Bash` 始终显示完整参数与结果。使用 `AGENT_TRACE=verbose` 可恢复每个 Tool Call 的逐项参数、调度方式和结果输出。Trace Mode 只改变终端展示，不改变数据库记录或发给模型的 Tool Result。
+
+Final Content 会把模型返回的 Markdown 渲染成适合当前终端宽度的标题、列表、强调、代码块、表格和链接预览；数据库仍保存原始 Markdown。Verbose 模式下 Tool Result 在终端最多显示 4,000 字符，完整结果仍会写入数据库并反馈给模型。MySQL 还会持久化 Model Invocation 的输入规模、Token Usage、结束原因和错误，以及每次实际 Provider Attempt 的 HTTP 状态、Request ID、错误与时间。
 
 Reasoning Content 只来自供应商响应的 `reasoning_content` 字段。并非所有模型或每个响应都会返回该字段；未返回时 CLI 会明确显示 `Provider reasoning: not returned`，不会把 Runtime 自己生成的说明伪装成模型思考。Reasoning Content 原文仍只存在于实时 Trace；数据库仅保留其字符数和供应商报告的 reasoning token 数。
 
@@ -161,6 +163,10 @@ Reasoning Content 只来自供应商响应的 `reasoning_content` 字段。并�
 - [ADR-013: Unsandboxed Bash requires full access](docs/decisions/013-unsandboxed-bash-requires-full-access.md)
 - [ADR-014: Reuse language servers within the CLI process](docs/decisions/014-reuse-language-servers-within-cli-process.md)
 - [ADR-016: Code Tools expose absolute paths](docs/decisions/016-code-tools-expose-absolute-paths.md)
+- [ADR-017: Agent Loop has no Step budget and unfinished Turns are recoverable](docs/decisions/017-unbounded-agent-loop-and-turn-recovery.md)
+- [ADR-018: Console traces fold successful inspection Tools by default](docs/decisions/018-console-traces-fold-inspection-tools.md)
+- [ADR-019: Model requests use transport default timeouts](docs/decisions/019-model-requests-use-transport-default-timeouts.md)
+- [ADR-020: Max Tokens is an optional Provider override](docs/decisions/020-max-tokens-is-an-optional-provider-override.md)
 
 ## 当前限制
 
@@ -170,7 +176,7 @@ Reasoning Content 只来自供应商响应的 `reasoning_content` 字段。并�
 - Bash 尚无 OS sandbox、Approval、交互式 stdin 和持久终端；只能在 Full Access 下执行一次性命令。
 - LSP 当前只支持 Vue/TypeScript/JavaScript；首次查询仍有 Language Server 冷启动成本，Vue Provider 还需要额外启动启用 Vue 插件的 `tsserver`。
 - Project 支持追加 Attached Root，但尚未支持移除 Root、更换 Primary Root 和运行时热更新。
-- 异常退出可能留下 `running` Turn；尚未实现租约和自动恢复。
+- CLI 会恢复最终的 `running` 或 `failed` Turn，但尚未实现多进程租约，不能安全支持两个进程同时恢复同一 Session。
 - 工具副作用与结果入库不是一个原子事务；自动重试前需要幂等键或 outbox。
 - 长对话尚未加入上下文窗口预算、摘要和裁剪策略。
 - Execution Trace 尚未支持 JSON 日志、Trace ID 导出和持久化查询接口；模型调用遥测已经持久化到 MySQL。

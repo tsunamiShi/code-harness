@@ -1,6 +1,6 @@
 import type { MysqlAgentStoreOptions } from '../storage/mysql-agent-store.ts'
 
-const DEFAULT_AGENT_MAX_TOKENS = 4_096
+export type AgentTraceMode = 'compact' | 'verbose'
 
 export function mysqlOptionsFromEnvironment(): MysqlAgentStoreOptions {
   return {
@@ -18,14 +18,22 @@ export function requiredEnvironment(name: string): string {
   return value
 }
 
-export function agentMaxTokensFromEnvironment(): number {
+export function agentMaxTokensFromEnvironment(): number | undefined {
   const value = process.env.AGENT_MAX_TOKENS
-  if (value === undefined) return DEFAULT_AGENT_MAX_TOKENS
+  if (value === undefined) return undefined
   const maxTokens = Number(value)
   if (!Number.isSafeInteger(maxTokens) || maxTokens < 1) {
     throw new Error(`Invalid AGENT_MAX_TOKENS: ${value}`)
   }
   return maxTokens
+}
+
+export function agentTraceModeFromEnvironment(): AgentTraceMode {
+  const value = process.env.AGENT_TRACE ?? 'compact'
+  if (value !== 'compact' && value !== 'verbose') {
+    throw new Error(`Invalid AGENT_TRACE: ${value}`)
+  }
+  return value
 }
 
 function readPort(value: string): number {
