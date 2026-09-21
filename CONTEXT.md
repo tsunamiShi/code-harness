@@ -14,6 +14,14 @@ _Avoid_: Model、Assistant
 Turn 内由模型推理、可选 Tool Call Batch 执行和结果反馈组成的迭代过程，直到得到最终答案或遇到异常。Agent Loop 不按 Step 数量终止。
 _Avoid_: Session、Turn
 
+**Loop Guard**:
+观察 Turn 内连续、工具名相同且参数规范化后完全相同的 Tool Calls 的 Runtime Policy。命中配置阈值时，它可以请求独立小模型生成弱提醒；不按 Step 数量审查，不阻塞 Tool Call，也不终止 Turn。
+_Avoid_: Max Steps、Request Timeout
+
+**Loop Guard Reminder**:
+Loop Guard 在精确重复链命中阈值后产生并持久化的建议性 Message。它作为普通 User Message 进入主模型上下文，不属于 System Prompt，也不拥有 stop、redirect 或 Tool 授权能力。
+_Avoid_: Model Invocation、Tool Call
+
 **Model**:
 根据当前 Messages 和可用 Tools 返回最终答案或 Tool Call Batch 的决策能力。
 _Avoid_: Agent、Provider

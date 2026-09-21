@@ -267,6 +267,69 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
       { step_number: 2, invocation_number: 1, status: 'failed', max_tokens: 2048 },
       { step_number: 2, invocation_number: 2, status: 'completed', max_tokens: 2048 },
     ])
+
+    let guardedRequests = 0
+    const guarded = await AgentSession.create({
+      model: {
+        async generate(input) {
+          guardedRequests += 1
+          if (guardedRequests <= 3) {
+            return {
+              kind: 'tool-calls',
+              calls: [{ id: `guard-search-${guardedRequests}`, name: 'search', arguments: { query: 'same' } }],
+            }
+          }
+          assert.equal(input.tools.length, 1)
+          assert.equal(input.messages.some(message =>
+            message.role === 'user'
+            && message.content.includes('Loop Guard reminder')
+            && message.content.includes('existing result')
+          ), true)
+          return { kind: 'final', content: 'guarded result' }
+        },
+      },
+      tools: [search],
+      store,
+      project: restoredProject,
+      loopGuard: {
+        thresholds: [3],
+        async review(input) {
+          return {
+            toolName: input.call.name,
+            repeatCount: input.repeatCount,
+            content: 'Loop Guard reminder: inspect the existing result.',
+          }
+        },
+      },
+    })
+    assert.equal(await guarded.send('Can this be answered?'), 'guarded result')
+    const guardedSnapshot = await store.loadSession(guarded.id)
+    assert.deepEqual(guardedSnapshot?.turns[0]?.loopGuardReminders, [{
+      reminderNumber: 1,
+      afterStep: 3,
+      toolName: 'search',
+      repeatCount: 3,
+      content: 'Loop Guard reminder: inspect the existing result.',
+    }])
+    const [guardRows] = await admin.query<(RowDataPacket & {
+      reminder_number: number
+      after_step: number
+      tool_name: string
+      repeat_count: number
+      content: string
+    })[]>(
+      `SELECT reminder_number, after_step, tool_name, repeat_count, content
+       FROM \`${database}\`.agent_loop_guard_reminders
+       WHERE turn_id = ?`,
+      [guardedSnapshot?.turns[0]?.id],
+    )
+    assert.deepEqual(guardRows.map(row => ({ ...row })), [{
+      reminder_number: 1,
+      after_step: 3,
+      tool_name: 'search',
+      repeat_count: 3,
+      content: 'Loop Guard reminder: inspect the existing result.',
+    }])
   } finally {
     await store?.close()
     await admin.query(`DROP DATABASE IF EXISTS \`${database}\``)

@@ -2,8 +2,10 @@ import { stdin, stdout } from 'node:process'
 import { createInterface } from 'node:readline/promises'
 
 import { OpenAICompatibleResponsesModel } from '../models/openai-compatible-responses-model.ts'
+import { OpenAICompatibleChatTextModel } from '../models/openai-compatible-chat-text-model.ts'
 import { primaryRoot, ProjectCatalog } from '../projects/project.ts'
 import { AgentSession } from '../runtime/agent-session.ts'
+import { ModelLoopGuard } from '../runtime/loop-guard.ts'
 import { MysqlAgentStore } from '../storage/mysql-agent-store.ts'
 import { createCodeTools } from '../tools/code-tools.ts'
 import { readChatTarget } from './chat-arguments.ts'
@@ -11,6 +13,9 @@ import { createConsoleTrace } from './console-trace.ts'
 import { createMarkdownRenderer } from './markdown.ts'
 import {
   agentMaxTokensFromEnvironment,
+  agentLoopGuardModelFromEnvironment,
+  agentLoopGuardThresholdsFromEnvironment,
+  agentTraceMaxResultCharsFromEnvironment,
   agentTraceModeFromEnvironment,
   mysqlOptionsFromEnvironment,
   requiredEnvironment,
@@ -24,13 +29,25 @@ const project = target.kind === 'project'
   : await projectForSession(target.id)
 const tools = createCodeTools(project, target.accessMode)
 const traceMode = agentTraceModeFromEnvironment()
+const traceMaxResultChars = agentTraceMaxResultCharsFromEnvironment()
+const loopGuardThresholds = agentLoopGuardThresholdsFromEnvironment()
 const maxTokens = agentMaxTokensFromEnvironment()
+const apiKey = requiredEnvironment('DASHSCOPE_API_KEY')
+const baseURL = requiredEnvironment('DASHSCOPE_BASE_URL')
+const loopGuardModelName = agentLoopGuardModelFromEnvironment()
+const model = new OpenAICompatibleResponsesModel({
+  apiKey,
+  baseURL,
+  model: requiredEnvironment('DASHSCOPE_MODEL'),
+})
+const loopGuardModel = new OpenAICompatibleChatTextModel({
+  apiKey,
+  baseURL,
+  model: loopGuardModelName,
+})
 const sessionOptions = {
-  model: new OpenAICompatibleResponsesModel({
-    apiKey: requiredEnvironment('DASHSCOPE_API_KEY'),
-    baseURL: requiredEnvironment('DASHSCOPE_BASE_URL'),
-    model: requiredEnvironment('DASHSCOPE_MODEL'),
-  }),
+  model,
+  loopGuard: new ModelLoopGuard(loopGuardModel, { thresholds: loopGuardThresholds }),
   tools,
   store,
   project,
@@ -39,6 +56,7 @@ const sessionOptions = {
   onEvent: createConsoleTrace({
     write: text => console.log(text),
     mode: traceMode,
+    maxToolResultChars: traceMaxResultChars,
     colors: stdout.isTTY && process.env.NO_COLOR === undefined,
     renderMarkdown: createMarkdownRenderer({
       width: Math.max(40, (stdout.columns ?? 100) - 8),
@@ -53,7 +71,8 @@ const terminal = createInterface({ input: stdin, output: stdout })
 console.log(`Project: ${project.name}`)
 console.log(`Working directory: ${primaryRoot(project).path}`)
 console.log(`Filesystem access: ${target.accessMode}`)
-console.log(`Trace: ${traceMode}`)
+console.log(`Trace: ${traceMode} · Tool Result preview: ${traceMaxResultChars} chars`)
+console.log(`Loop Guard: ${loopGuardModelName} reminder at exact repeats ${loopGuardThresholds.join('/')}`)
 console.log(`Session: ${session.id}`)
 console.log('Enter /exit to quit or /retry to continue a failed Turn. Resume later with: pnpm chat -- --session <session-id>')
 

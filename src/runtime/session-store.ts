@@ -5,6 +5,7 @@ import type {
   ModelResponseMetadata,
   ToolCall,
 } from './types.ts'
+import type { LoopGuardReminder } from './loop-guard.ts'
 
 export type SessionStatus = 'active'
 export type TurnStatus = 'running' | 'completed' | 'failed'
@@ -33,7 +34,13 @@ export interface AgentTurn {
   status: TurnStatus
   prompt: string
   steps: readonly AgentStep[]
+  loopGuardReminders: readonly AgentLoopGuardReminder[]
   error?: string
+}
+
+export interface AgentLoopGuardReminder extends LoopGuardReminder {
+  reminderNumber: number
+  afterStep: number
 }
 
 export interface AgentSessionSnapshot {
@@ -77,6 +84,15 @@ export type SessionRecord =
       step: number
       errorName: string
       error: string
+    }
+  | {
+      type: 'loop-guard.reminded'
+      turnId: string
+      reminderNumber: number
+      afterStep: number
+      toolName: string
+      repeatCount: number
+      content: string
     }
   | {
       type: 'step.tools-called'
@@ -174,6 +190,11 @@ export function projectModelState(snapshot: AgentSessionSnapshot): ProjectedMode
           toolCallId: execution.call.id,
           content: toolResult,
         })
+      }
+      for (const reminder of turn.loopGuardReminders.filter(
+        candidate => candidate.afterStep === step.stepNumber,
+      )) {
+        messages.push({ role: 'user', content: reminder.content })
       }
     }
   }

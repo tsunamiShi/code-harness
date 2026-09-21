@@ -55,7 +55,7 @@ test('verbose mode renders model reasoning, tool arguments, result content, and 
   assert.match(rendered, /Model content\n│    I will inspect the file\./)
   assert.match(rendered, /Read call-1/)
   assert.match(rendered, /"path": "src\/app\.ts"/)
-  assert.match(rendered, /12345678\n│    … 2 more characters omitted/)
+  assert.match(rendered, /12345\n│    … 2 characters omitted …\n│    890/)
   assert.match(rendered, /Turn completed 1 steps · 1\.30s/)
 })
 
@@ -112,6 +112,27 @@ test('compact mode expands failed inspection Tools', () => {
   assert.match(rendered, /Error: file not found/)
 })
 
+test('bounds expanded Tool Results with useful head and tail content', () => {
+  const output: string[] = []
+  const trace = createConsoleTrace({ write: text => output.push(text), colors: false })
+
+  trace({
+    type: 'tool.completed',
+    turnId: 'turn',
+    step: 1,
+    call: { id: 'bash-long', name: 'Bash', arguments: { command: 'pnpm test' } },
+    durationMs: 3,
+    failed: false,
+    content: `${'H'.repeat(700)}${'T'.repeat(200)}`,
+  })
+
+  const rendered = output.join('\n')
+  assert.match(rendered, /H{500}/)
+  assert.match(rendered, /… 100 characters omitted …/)
+  assert.match(rendered, /T{200}/)
+  assert.doesNotMatch(rendered, /H{501}/)
+})
+
 test('states when the provider returns no reasoning content', () => {
   const output: string[] = []
   const trace = createConsoleTrace({
@@ -129,4 +150,23 @@ test('states when the provider returns no reasoning content', () => {
 
   assert.match(output.join('\n'), /Provider reasoning: not returned/)
   assert.match(output.join('\n'), /Final content\n│    preview: done/)
+})
+
+test('renders Loop Guard reminders as execution-chain checkpoints', () => {
+  const output: string[] = []
+  const trace = createConsoleTrace({ write: text => output.push(text), colors: false })
+
+  trace({
+    type: 'loop-guard.reminded',
+    turnId: 'turn',
+    afterStep: 3,
+    toolName: 'Read',
+    repeatCount: 3,
+    content: 'Inspect the existing result before repeating the call.',
+  })
+
+  const rendered = output.join('\n')
+  assert.match(rendered, /Loop Guard reminder/)
+  assert.match(rendered, /Read × 3 · after step 3/)
+  assert.match(rendered, /Inspect the existing result/)
 })

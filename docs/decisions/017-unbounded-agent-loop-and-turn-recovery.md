@@ -51,4 +51,4 @@ This keeps storage transitions simple but inserts another user message and loses
 - Provider failures preserve prior exploration and can retry the same logical Step without overwriting Invocation history.
 - Reconnecting with `--session` automatically continues the final unfinished Turn; `/retry` repeats recovery after another failure.
 - A recovered Tool Error reports uncertainty rather than claiming whether an interrupted side effect occurred.
-- User cancellation, context compaction, lease ownership, and no-progress detection remain future runtime policies.
+- User cancellation, context compaction, and lease ownership remain future runtime policies. ADR-021 adds advisory exact-repeat detection without restoring a maximum Step count.

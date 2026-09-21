@@ -9,6 +9,7 @@ import mysql, {
 
 import type {
   AgentSessionSnapshot,
+  AgentLoopGuardReminder,
   AgentStep,
   AgentToolExecution,
   AgentTurn,
@@ -91,6 +92,15 @@ export class MysqlAgentStore implements SessionStore, ProjectStore {
        ORDER BY t.turn_number, s.step_number, c.call_index`,
       [sessionId],
     )
+    const [loopGuardRows] = await this.pool.execute<LoopGuardReminderRow[]>(
+      `SELECT r.turn_id, r.reminder_number, r.after_step, r.tool_name,
+              r.repeat_count, r.content
+       FROM agent_loop_guard_reminders AS r
+       INNER JOIN agent_turns AS t ON t.id = r.turn_id
+       WHERE t.session_id = ?
+       ORDER BY t.turn_number, r.reminder_number`,
+      [sessionId],
+    )
 
     const toolCallsByStep = new Map<string, AgentToolExecution[]>()
     for (const row of toolCallRows) {
@@ -106,11 +116,22 @@ export class MysqlAgentStore implements SessionStore, ProjectStore {
       stepsByTurn.set(row.turn_id, steps)
     }
 
+    const remindersByTurn = new Map<string, AgentLoopGuardReminder[]>()
+    for (const row of loopGuardRows) {
+      const reminders = remindersByTurn.get(row.turn_id) ?? []
+      reminders.push(toLoopGuardReminder(row))
+      remindersByTurn.set(row.turn_id, reminders)
+    }
+
     return {
       id: session.id,
       projectId: session.project_id,
       status: readSessionStatus(session.status),
-      turns: turnRows.map(row => toTurn(row, stepsByTurn.get(row.id) ?? [])),
+      turns: turnRows.map(row => toTurn(
+        row,
+        stepsByTurn.get(row.id) ?? [],
+        remindersByTurn.get(row.id) ?? [],
+      )),
     }
   }
 
@@ -319,6 +340,15 @@ interface ToolCallRow extends RowDataPacket {
   error_message: string | null
 }
 
+interface LoopGuardReminderRow extends RowDataPacket {
+  turn_id: string
+  reminder_number: number
+  after_step: number
+  tool_name: string
+  repeat_count: number
+  content: string
+}
+
 interface ProjectWithRootRow extends RowDataPacket {
   id: string
   name: string
@@ -382,7 +412,7 @@ async function migrate(pool: Pool): Promise<void> {
     'SELECT MAX(version) AS version FROM agent_schema_migrations',
   )
   const version = rows[0]?.version ?? 0
-  if (version > 6) throw new Error(`Database schema version ${version} is newer than supported version 6`)
+  if (version > 8) throw new Error(`Database schema version ${version} is newer than supported version 8`)
 
   if (version < 1) {
     await pool.execute(`
@@ -590,10 +620,52 @@ async function migrate(pool: Pool): Promise<void> {
 
   if (version < 6) {
     await pool.execute(`
+      CREATE TABLE IF NOT EXISTS agent_loop_guard_reviews (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        turn_id VARCHAR(36) NOT NULL,
+        review_number INT UNSIGNED NOT NULL,
+        after_step INT UNSIGNED NOT NULL,
+        decision VARCHAR(16) NOT NULL,
+        reason TEXT NOT NULL,
+        instruction TEXT NULL,
+        created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+        UNIQUE KEY uq_agent_loop_guard_reviews_turn_number (turn_id, review_number),
+        KEY idx_agent_loop_guard_reviews_turn_step (turn_id, after_step),
+        CONSTRAINT fk_agent_loop_guard_reviews_turn FOREIGN KEY (turn_id)
+          REFERENCES agent_turns (id) ON DELETE CASCADE,
+        CONSTRAINT chk_agent_loop_guard_reviews_decision
+          CHECK (decision IN ('continue', 'redirect', 'stop'))
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+    `)
+    await pool.execute('INSERT IGNORE INTO agent_schema_migrations (version) VALUES (6)')
+  }
+
+  if (version < 7) {
+    await pool.execute(`
       ALTER TABLE agent_steps
         ADD COLUMN provider_response_id VARCHAR(255) NULL AFTER assistant_content
     `)
-    await pool.execute('INSERT IGNORE INTO agent_schema_migrations (version) VALUES (6)')
+    await pool.execute('INSERT IGNORE INTO agent_schema_migrations (version) VALUES (7)')
+  }
+
+  if (version < 8) {
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS agent_loop_guard_reminders (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        turn_id VARCHAR(36) NOT NULL,
+        reminder_number INT UNSIGNED NOT NULL,
+        after_step INT UNSIGNED NOT NULL,
+        tool_name VARCHAR(255) NOT NULL,
+        repeat_count INT UNSIGNED NOT NULL,
+        content TEXT NOT NULL,
+        created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+        UNIQUE KEY uq_agent_loop_guard_reminders_turn_number (turn_id, reminder_number),
+        KEY idx_agent_loop_guard_reminders_turn_step (turn_id, after_step),
+        CONSTRAINT fk_agent_loop_guard_reminders_turn FOREIGN KEY (turn_id)
+          REFERENCES agent_turns (id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+    `)
+    await pool.execute('INSERT IGNORE INTO agent_schema_migrations (version) VALUES (8)')
   }
 }
 
@@ -740,6 +812,23 @@ async function applyRecord(
       requireChanged(result, `Cannot fail model invocation for step ${record.step}`)
       return
     }
+    case 'loop-guard.reminded': {
+      await requireRunningTurn(connection, sessionId, record.turnId)
+      await connection.execute(
+        `INSERT INTO agent_loop_guard_reminders
+           (turn_id, reminder_number, after_step, tool_name, repeat_count, content)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          record.turnId,
+          record.reminderNumber,
+          record.afterStep,
+          record.toolName,
+          record.repeatCount,
+          record.content,
+        ],
+      )
+      return
+    }
     case 'step.tools-called': {
       await requireRunningTurn(connection, sessionId, record.turnId)
       if (record.calls.length === 0) throw new Error('A tool Step must contain at least one call')
@@ -865,14 +954,29 @@ function requireChanged(result: ResultSetHeader, message: string): void {
   if (result.affectedRows !== 1) throw new Error(message)
 }
 
-function toTurn(row: TurnRow, steps: readonly AgentStep[]): AgentTurn {
+function toTurn(
+  row: TurnRow,
+  steps: readonly AgentStep[],
+  loopGuardReminders: readonly AgentLoopGuardReminder[],
+): AgentTurn {
   return {
     id: row.id,
     turnNumber: row.turn_number,
     status: readTurnStatus(row.status),
     prompt: row.prompt,
     steps,
+    loopGuardReminders,
     ...(row.error_message === null ? {} : { error: row.error_message }),
+  }
+}
+
+function toLoopGuardReminder(row: LoopGuardReminderRow): AgentLoopGuardReminder {
+  return {
+    reminderNumber: row.reminder_number,
+    afterStep: row.after_step,
+    toolName: row.tool_name,
+    repeatCount: row.repeat_count,
+    content: row.content,
   }
 }
 

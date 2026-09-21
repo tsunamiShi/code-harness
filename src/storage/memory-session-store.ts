@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 
 import type {
   AgentSessionSnapshot,
+  AgentLoopGuardReminder,
   AgentStep,
   AgentToolExecution,
   AgentTurn,
@@ -38,6 +39,7 @@ export class MemorySessionStore implements SessionStore {
         status: 'running',
         prompt: record.prompt,
         steps: [],
+        loopGuardReminders: [],
       })
       return
     }
@@ -50,6 +52,17 @@ export class MemorySessionStore implements SessionStore {
       || record.type === 'model.invocation-failed'
     ) {
       requireRunningTurn(turn)
+      return
+    }
+    if (record.type === 'loop-guard.reminded') {
+      requireRunningTurn(turn)
+      turn.loopGuardReminders.push({
+        reminderNumber: record.reminderNumber,
+        afterStep: record.afterStep,
+        toolName: record.toolName,
+        repeatCount: record.repeatCount,
+        content: record.content,
+      })
       return
     }
     if (record.type === 'step.tools-called') {
@@ -153,8 +166,9 @@ interface MutableSession {
   turns: MutableTurn[]
 }
 
-interface MutableTurn extends Omit<AgentTurn, 'steps'> {
+interface MutableTurn extends Omit<AgentTurn, 'steps' | 'loopGuardReminders'> {
   steps: MutableStep[]
+  loopGuardReminders: AgentLoopGuardReminder[]
   error?: string
 }
 

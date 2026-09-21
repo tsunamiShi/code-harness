@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { AgentSession, runAgent, type AgentEvent } from '../../src/runtime/agent-session.ts'
+import type { LoopGuard } from '../../src/runtime/loop-guard.ts'
 import type { SessionRecord, SessionStore } from '../../src/runtime/session-store.ts'
 import { MemorySessionStore } from '../../src/storage/memory-session-store.ts'
 import type { Message, Model, ModelOutput, Tool } from '../../src/runtime/types.ts'
@@ -153,6 +154,128 @@ test('does not impose a model output token limit by default', async () => {
 
   assert.equal(await runAgent({ model, tools: [], prompt: 'hello' }), 'done')
   assert.equal(observedMaxTokens, undefined)
+})
+
+test('injects advisory Loop Guard content after repeated identical Tool Calls', async () => {
+  let request = 0
+  let toolExecutions = 0
+  const observedTools: number[] = []
+  const observedMessages: Array<readonly Message[]> = []
+  const records: SessionRecord[] = []
+  const inner = new MemorySessionStore()
+  const store: SessionStore = {
+    createSession: async projectId => await inner.createSession(projectId),
+    loadSession: async sessionId => await inner.loadSession(sessionId),
+    recoverTurn: async (sessionId, turnId, error) => {
+      await inner.recoverTurn(sessionId, turnId, error)
+    },
+    record: async (sessionId, record) => {
+      records.push(structuredClone(record))
+      await inner.record(sessionId, record)
+    },
+  }
+  const model: Model = {
+    async generate(input) {
+      request += 1
+      observedTools.push(input.tools.length)
+      observedMessages.push(structuredClone(input.messages))
+      if (request <= 3) {
+        return {
+          kind: 'tool-calls',
+          calls: [{ id: `bash-${request}`, name: 'Bash', arguments: { command: 'same-probe' } }],
+        }
+      }
+      return { kind: 'final', content: 'Finished after the reminder.' }
+    },
+  }
+  const loopGuard: LoopGuard = {
+    thresholds: [3],
+    async review(input) {
+      return {
+        toolName: input.call.name,
+        repeatCount: input.repeatCount,
+        content: 'Loop Guard reminder: inspect the previous result and change approach.',
+      }
+    },
+  }
+  const bash: Tool = {
+    description: { name: 'Bash', description: 'Run.', parameters: {} },
+    async execute() {
+      toolExecutions += 1
+      return 'probe result'
+    },
+  }
+
+  const session = await AgentSession.create({ model, tools: [bash], store, loopGuard })
+  assert.equal(await session.send('Inspect rendered HTML.'), 'Finished after the reminder.')
+
+  assert.equal(toolExecutions, 3)
+  assert.deepEqual(observedTools, [1, 1, 1, 1])
+  const reminderMessage = observedMessages[3]?.find(message =>
+    message.role === 'user' && message.content.startsWith('Loop Guard reminder')
+  )
+  assert.equal(reminderMessage?.role, 'user')
+  assert.match(reminderMessage.role === 'user' ? reminderMessage.content : '', /change approach/)
+  assert.equal(
+    records.filter(record => record.type === 'loop-guard.reminded').length,
+    1,
+  )
+})
+
+test('reviews a persisted exact-repeat chain before resuming an interrupted Turn', async () => {
+  const store = new MemorySessionStore()
+  let request = 0
+  const tool: Tool = {
+    description: { name: 'Bash', description: 'Run.', parameters: {} },
+    async execute() {
+      return 'probe result'
+    },
+  }
+  const interrupted = await AgentSession.create({
+    model: {
+      async generate() {
+        request += 1
+        if (request <= 3) {
+          return {
+            kind: 'tool-calls',
+            calls: [{ id: `probe-${request}`, name: 'Bash', arguments: { command: 'same' } }],
+          }
+        }
+        throw new Error('process interrupted')
+      },
+    },
+    tools: [tool],
+    store,
+  })
+  await assert.rejects(interrupted.send('Explain whether browser inspection is available.'), /interrupted/)
+
+  let reviews = 0
+  let resumedTools = -1
+  const resumed = await AgentSession.resume(interrupted.id, {
+    model: {
+      async generate(input) {
+        resumedTools = input.tools.length
+        return { kind: 'final', content: 'Browser inspection is not currently available.' }
+      },
+    },
+    tools: [tool],
+    store,
+    loopGuard: {
+      thresholds: [3],
+      async review(input) {
+        reviews += 1
+        return {
+          toolName: input.call.name,
+          repeatCount: input.repeatCount,
+          content: 'Loop Guard reminder: use the existing evidence.',
+        }
+      },
+    },
+  })
+
+  assert.equal(await resumed.continueTurn(), 'Browser inspection is not currently available.')
+  assert.equal(reviews, 1)
+  assert.equal(resumedTools, 1)
 })
 
 test('allows ten tool steps followed by a final answer', async () => {

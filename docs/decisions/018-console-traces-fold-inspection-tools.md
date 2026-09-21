@@ -21,6 +21,8 @@ Keep `AgentEvent` and persistence unchanged. Add two Console Trace presentation 
 - `compact` is the default. It buffers successful `Read`, `Glob`, `Grep`, and `LSP` completion events within a Step and emits one summary containing counts by Tool, up to three abbreviated targets, and the slowest duration.
 - `verbose` preserves the existing presentation of Tool Batch scheduling, every Tool argument, and every truncated Tool Result.
 
+Expanded Tool Results retain at most 800 source characters by default, split between the beginning and end so command summaries and trailing errors remain visible. `AGENT_TRACE_MAX_RESULT_CHARS` changes this presentation limit without modifying the complete result persisted in MySQL or sent back to the model.
+
 Compact mode always expands a failed inspection Tool so its arguments and error remain actionable. It also always expands `Edit`, `Write`, `Bash`, and unknown Tools because their mutations, process output, or unfamiliar behavior should remain visible.
 
 ## Alternatives Considered
@@ -42,4 +44,5 @@ A TUI can provide real expandable rows but introduces screen ownership, keyboard
 - Normal repository exploration occupies substantially fewer terminal lines.
 - Inspection failures, file mutations, and shell commands remain explicit by default.
 - `AGENT_TRACE=verbose` provides the full live diagnostic trace without changing Runtime behavior.
+- `AGENT_TRACE_MAX_RESULT_CHARS` tunes expanded result previews independently of trace mode.
 - Compact summaries are presentation artifacts; they do not replace durable Session records or full Tool Results sent to the model.

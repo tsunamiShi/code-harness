@@ -1,7 +1,7 @@
 import type { AgentEvent } from '../runtime/agent-session.ts'
 import type { AgentTraceMode } from './config.ts'
 
-const DEFAULT_MAX_TOOL_RESULT_CHARS = 4_000
+const DEFAULT_MAX_TOOL_RESULT_CHARS = 800
 const COLLAPSIBLE_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LSP'])
 
 export interface ConsoleTraceOptions {
@@ -43,6 +43,7 @@ export function createConsoleTrace(options: ConsoleTraceOptions): (event: AgentE
       || event.type === 'turn.completed'
       || event.type === 'turn.failed'
       || event.type === 'tool.batch-started'
+      || event.type === 'loop-guard.reminded'
     ) {
       flushCollapsedTools()
     }
@@ -80,6 +81,12 @@ export function createConsoleTrace(options: ConsoleTraceOptions): (event: AgentE
           }
           options.write(`│  ${color.cyan('Tool calls')} ${event.output.calls.length}`)
         }
+        return
+      case 'loop-guard.reminded':
+        options.write(
+          `│  ${color.yellow('!')} ${color.bold('Loop Guard reminder')} ${color.dim(`${event.toolName} × ${event.repeatCount} · after step ${event.afterStep}`)}`,
+        )
+        options.write(block('Advice', event.content, color.yellow))
         return
       case 'tool.batch-started':
         if (mode === 'compact') return
@@ -187,7 +194,10 @@ function formatValue(value: unknown): string {
 
 function truncate(value: string, maxChars: number): string {
   if (value.length <= maxChars) return value
-  return `${value.slice(0, maxChars)}\n… ${value.length - maxChars} more characters omitted`
+  const headChars = Math.ceil(maxChars * 0.625)
+  const tailChars = maxChars - headChars
+  const tail = tailChars === 0 ? '' : value.slice(-tailChars)
+  return `${value.slice(0, headChars)}\n… ${value.length - maxChars} characters omitted …\n${tail}`
 }
 
 function shortId(id: string): string {

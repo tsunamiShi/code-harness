@@ -2,6 +2,10 @@ import type { MysqlAgentStoreOptions } from '../storage/mysql-agent-store.ts'
 
 export type AgentTraceMode = 'compact' | 'verbose'
 
+const DEFAULT_AGENT_TRACE_MAX_RESULT_CHARS = 800
+const DEFAULT_AGENT_LOOP_GUARD_THRESHOLDS = [3, 5, 8] as const
+const DEFAULT_AGENT_LOOP_GUARD_MODEL = 'ZHIPU/GLM-5.3-Flash'
+
 export function mysqlOptionsFromEnvironment(): MysqlAgentStoreOptions {
   return {
     host: process.env.MYSQL_HOST ?? '127.0.0.1',
@@ -34,6 +38,34 @@ export function agentTraceModeFromEnvironment(): AgentTraceMode {
     throw new Error(`Invalid AGENT_TRACE: ${value}`)
   }
   return value
+}
+
+export function agentTraceMaxResultCharsFromEnvironment(): number {
+  const value = process.env.AGENT_TRACE_MAX_RESULT_CHARS
+  if (value === undefined) return DEFAULT_AGENT_TRACE_MAX_RESULT_CHARS
+  const maxChars = Number(value)
+  if (!Number.isSafeInteger(maxChars) || maxChars < 1) {
+    throw new Error(`Invalid AGENT_TRACE_MAX_RESULT_CHARS: ${value}`)
+  }
+  return maxChars
+}
+
+export function agentLoopGuardThresholdsFromEnvironment(): readonly number[] {
+  const value = process.env.AGENT_LOOP_GUARD_THRESHOLDS
+  if (value === undefined) return DEFAULT_AGENT_LOOP_GUARD_THRESHOLDS
+  const thresholds = value.split(',').map(part => Number(part.trim()))
+  if (
+    thresholds.length === 0
+    || thresholds.some(threshold => !Number.isSafeInteger(threshold) || threshold < 2)
+    || new Set(thresholds).size !== thresholds.length
+  ) {
+    throw new Error(`Invalid AGENT_LOOP_GUARD_THRESHOLDS: ${value}`)
+  }
+  return thresholds.sort((left, right) => left - right)
+}
+
+export function agentLoopGuardModelFromEnvironment(): string {
+  return process.env.DASHSCOPE_GUARD_MODEL ?? DEFAULT_AGENT_LOOP_GUARD_MODEL
 }
 
 function readPort(value: string): number {
