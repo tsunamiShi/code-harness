@@ -73,7 +73,7 @@ _Avoid_: Global Tool、Project Tool
 _Avoid_: Project Permission、Session Permission
 
 **Read**:
-读取一个绝对路径所指向 UTF-8 文本文件的有界行范围。
+读取一个绝对路径所指向 UTF-8 文本文件的有界行范围。结果同时报告文件总行数,使模型可以在一次后续调用中请求完整剩余范围,而不是盲目分页。
 _Avoid_: Fetch、Open
 
 **Edit**:
@@ -85,11 +85,11 @@ _Avoid_: Write、Patch、Search and Replace All
 _Avoid_: Edit、Overwrite、Append
 
 **Glob**:
-在一个绝对目录路径下按相对 Glob 模式查找候选文件，并返回绝对文件路径。
+在一个绝对目录路径下按相对 Glob 模式查找候选文件，并返回绝对文件路径；开启 includeDirectories 后同时返回匹配的目录，可用 pattern `*` 完成一层目录列举。
 _Avoid_: List Files、Find Files
 
 **Grep**:
-按正则表达式搜索绝对文件或目录路径，并返回匹配文件的绝对路径和行号。
+按正则表达式搜索绝对文件或目录路径，并返回匹配文件的绝对路径和行号；可通过 before 与 after 参数附带每个匹配行前后指定数量的上下文行。上下文行不计入 maxResults 限制。
 _Avoid_: Search Text、Search
 
 **Bash**:

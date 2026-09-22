@@ -13,9 +13,10 @@ import {
 } from '../projects/project.ts'
 import type { Tool } from '../runtime/types.ts'
 
-const DEFAULT_READ_LINES = 200
-const MAX_READ_LINES = 1_000
+const DEFAULT_READ_LINES = 500
+const MAX_READ_LINES = 2_000
 const MAX_READ_CHARACTERS = 64_000
+const MAX_READ_TOTAL_LINES_BYTES = 16_000_000
 const MAX_EDIT_FILE_BYTES = 2_000_000
 const MAX_EDIT_TEXT_CHARACTERS = 64_000
 const MAX_WRITE_CHARACTERS = 64_000
@@ -24,6 +25,7 @@ const MAX_GLOB_RESULTS = 2_000
 const MAX_GLOB_CANDIDATES = 10_000
 const DEFAULT_GREP_RESULTS = 100
 const MAX_GREP_RESULTS = 500
+const MAX_GREP_CONTEXT_LINES = 50
 const GREP_TIMEOUT_MS = 10_000
 const MAX_GREP_LINE_CHARACTERS = 1_000
 const BINARY_SAMPLE_BYTES = 8_192
@@ -44,7 +46,7 @@ export function createFilesystemTools(
       description: {
         name: 'Read',
         description:
-          `Read UTF-8 text from an absolute file path inside ${scope}.`,
+          `Read UTF-8 text from an absolute file path inside ${scope}. Results report the file's total line count, so the remaining range can be requested in one follow-up call instead of paging blindly.`,
         parameters: {
           type: 'object',
           properties: {
@@ -61,7 +63,7 @@ export function createFilesystemTools(
               type: 'integer',
               minimum: 1,
               maximum: MAX_READ_LINES,
-              description: `Maximum lines to return. Defaults to ${DEFAULT_READ_LINES}.`,
+              description: `Maximum lines to return. Defaults to ${DEFAULT_READ_LINES}; request the full remaining range in one call.`,
             },
           },
           required: ['path'],
@@ -166,7 +168,7 @@ export function createFilesystemTools(
       description: {
         name: 'Glob',
         description:
-          `Find files by a glob pattern below an absolute directory path inside ${scope}. Results are absolute paths.`,
+          `Find files by a glob pattern below an absolute directory path inside ${scope}. Results are absolute paths; set includeDirectories to also list matching directories, so pattern * lists one directory level instead of Bash ls.`,
         parameters: {
           type: 'object',
           properties: {
@@ -177,6 +179,10 @@ export function createFilesystemTools(
             path: {
               type: 'string',
               description: 'Absolute directory path in which to search.',
+            },
+            includeDirectories: {
+              type: 'boolean',
+              description: 'Also return directories matching the pattern. Defaults to false.',
             },
             limit: {
               type: 'integer',
@@ -190,11 +196,12 @@ export function createFilesystemTools(
         },
       },
       async execute(arguments_) {
-        const input = readArguments(arguments_, 'Glob', ['pattern', 'path', 'limit'])
+        const input = readArguments(arguments_, 'Glob', ['pattern', 'path', 'includeDirectories', 'limit'])
         return serialize(
           await filesystem.glob({
             pattern: requiredString(input, 'pattern', 'Glob'),
             path: requiredString(input, 'path', 'Glob'),
+            includeDirectories: optionalBoolean(input, 'includeDirectories') ?? false,
             limit:
               optionalInteger(input, 'limit', 1, MAX_GLOB_RESULTS) ?? DEFAULT_GLOB_RESULTS,
           }),
@@ -207,7 +214,7 @@ export function createFilesystemTools(
       description: {
         name: 'Grep',
         description:
-          `Search UTF-8 text files with a regular expression inside ${scope}. Each result identifies one matching line.`,
+          `Search UTF-8 text files with a regular expression inside ${scope}. Each result line is either a matching line or a surrounding context line, identified by kind.`,
         parameters: {
           type: 'object',
           properties: {
@@ -227,11 +234,23 @@ export function createFilesystemTools(
               type: 'boolean',
               description: 'Whether matching is case-sensitive. Defaults to true.',
             },
+            before: {
+              type: 'integer',
+              minimum: 1,
+              maximum: MAX_GREP_CONTEXT_LINES,
+              description: 'Number of context lines to return before each matching line. Defaults to 0.',
+            },
+            after: {
+              type: 'integer',
+              minimum: 1,
+              maximum: MAX_GREP_CONTEXT_LINES,
+              description: 'Number of context lines to return after each matching line. Defaults to 0.',
+            },
             maxResults: {
               type: 'integer',
               minimum: 1,
               maximum: MAX_GREP_RESULTS,
-              description: `Maximum matching lines to return. Defaults to ${DEFAULT_GREP_RESULTS}.`,
+              description: `Maximum matching lines to return; context lines do not count. Defaults to ${DEFAULT_GREP_RESULTS}.`,
             },
           },
           required: ['path', 'pattern'],
@@ -244,6 +263,8 @@ export function createFilesystemTools(
           'path',
           'glob',
           'caseSensitive',
+          'before',
+          'after',
           'maxResults',
         ])
         return serialize(
@@ -252,6 +273,8 @@ export function createFilesystemTools(
             path: requiredString(input, 'path', 'Grep'),
             glob: optionalString(input, 'glob'),
             caseSensitive: optionalBoolean(input, 'caseSensitive') ?? true,
+            before: optionalInteger(input, 'before', 1, MAX_GREP_CONTEXT_LINES) ?? 0,
+            after: optionalInteger(input, 'after', 1, MAX_GREP_CONTEXT_LINES) ?? 0,
             maxResults:
               optionalInteger(input, 'maxResults', 1, MAX_GREP_RESULTS)
               ?? DEFAULT_GREP_RESULTS,
@@ -282,6 +305,7 @@ interface WriteInput {
 interface GlobInput {
   pattern: string
   path: string
+  includeDirectories: boolean
   limit: number
 }
 
@@ -290,6 +314,8 @@ interface GrepInput {
   path: string
   glob: string | undefined
   caseSensitive: boolean
+  before: number
+  after: number
   maxResults: number
 }
 
@@ -302,6 +328,8 @@ class ProjectFilesystem {
   async read(input: ReadInput): Promise<Record<string, unknown>> {
     const target = await this.resolveExisting(input.path, 'file')
     await assertTextFile(target.actualPath, input.path)
+    const { size } = await stat(target.actualPath)
+    const countTotalLines = size <= MAX_READ_TOTAL_LINES_BYTES
 
     const lines: Array<{ line: number; text: string }> = []
     let lineNumber = 0
@@ -315,29 +343,25 @@ class ProjectFilesystem {
     for await (const text of reader) {
       lineNumber += 1
       if (lineNumber < input.offset) continue
-      if (lines.length >= input.limit) {
+      if (lines.length >= input.limit || characters >= MAX_READ_CHARACTERS) {
         truncated = true
-        break
+        if (!countTotalLines) break
+        continue
       }
       const remaining = MAX_READ_CHARACTERS - characters
-      if (remaining <= 0) {
-        truncated = true
-        break
-      }
       const visible = text.length > remaining ? `${text.slice(0, Math.max(0, remaining - 1))}…` : text
       lines.push({ line: lineNumber, text: visible })
       characters += visible.length
-      if (visible.length !== text.length) {
-        truncated = true
-        break
-      }
+      if (visible.length !== text.length) truncated = true
     }
 
-    return {
+    const result: Record<string, unknown> = {
       path: target.actualPath,
       lines,
       truncated,
     }
+    if (countTotalLines) result.totalLines = lineNumber
+    return result
   }
 
   async edit(input: EditInput): Promise<Record<string, unknown>> {
@@ -419,6 +443,7 @@ class ProjectFilesystem {
     const pattern = requireRelativePattern(input.pattern, 'Glob pattern')
     const base = await this.resolveExisting(input.path, 'directory')
     const files: string[] = []
+    const directories: string[] = []
     let candidateCount = 0
     let scanLimitReached = false
 
@@ -432,25 +457,33 @@ class ProjectFilesystem {
           scanLimitReached = true
           break
         }
-        const candidate = await existingAuthorizedFile(
+        const candidate = await existingAuthorizedEntry(
           this.project,
           this.accessMode,
           resolve(base.actualPath, match),
         )
         if (!candidate) continue
-        files.push(candidate)
+        if (candidate.isFile) files.push(candidate.actualPath)
+        else if (input.includeDirectories) directories.push(candidate.actualPath)
       }
     } catch (error: unknown) {
       throw new Error(`Glob failed for pattern ${JSON.stringify(input.pattern)}: ${errorMessage(error)}`)
     }
 
     const uniqueFiles = [...new Set(files)].sort()
-    return {
+    const uniqueDirectories = [...new Set(directories)].sort()
+    const result: Record<string, unknown> = {
       path: base.actualPath,
       pattern: input.pattern,
       files: uniqueFiles.slice(0, input.limit),
-      truncated: scanLimitReached || uniqueFiles.length > input.limit,
+      truncated: scanLimitReached
+        || uniqueFiles.length > input.limit
+        || (input.includeDirectories && uniqueDirectories.length > input.limit),
     }
+    if (input.includeDirectories) {
+      result.directories = uniqueDirectories.slice(0, input.limit)
+    }
+    return result
   }
 
   async grep(input: GrepInput): Promise<Record<string, unknown>> {
@@ -465,6 +498,8 @@ class ProjectFilesystem {
       pattern: input.pattern,
       fileGlob,
       caseSensitive: input.caseSensitive,
+      before: input.before,
+      after: input.after,
       maxResults: input.maxResults,
     })
     return {
@@ -549,18 +584,21 @@ interface RipgrepInput {
   pattern: string
   fileGlob: string | undefined
   caseSensitive: boolean
+  before: number
+  after: number
   maxResults: number
 }
 
-interface GrepMatch {
+interface GrepResultLine {
   path: string
   line: number
   text: string
+  kind: 'match' | 'context'
 }
 
 async function runRipgrep(
   input: RipgrepInput,
-): Promise<{ items: GrepMatch[]; limitReached: boolean }> {
+): Promise<{ items: GrepResultLine[]; limitReached: boolean }> {
   const arguments_ = [
     '--json',
     '--hidden',
@@ -571,6 +609,8 @@ async function runRipgrep(
     ...(input.fileGlob === undefined ? [] : ['--glob', input.fileGlob]),
     ...DEFAULT_EXCLUDES.flatMap(pattern => ['--glob', `!${pattern}`]),
     ...(input.caseSensitive ? [] : ['--ignore-case']),
+    ...(input.before > 0 ? ['--before-context', String(input.before)] : []),
+    ...(input.after > 0 ? ['--after-context', String(input.after)] : []),
     '--',
     input.pattern,
     input.targetPath,
@@ -580,7 +620,7 @@ async function runRipgrep(
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   const exit = waitForExit(child)
-  const items: GrepMatch[] = []
+  const items: GrepResultLine[] = []
   let stderr = ''
   let limitReached = false
   let timedOut = false
@@ -596,14 +636,30 @@ async function runRipgrep(
   })
 
   try {
+    let matchCount = 0
+    let previousKey: string | undefined
     for await (const line of reader) {
-      const match = parseRipgrepMatch(line, input.cwd)
-      if (!match) continue
-      items.push(match)
-      if (items.length >= input.maxResults) {
-        limitReached = true
+      const event = parseRipgrepEvent(line, input.cwd)
+      if (!event) continue
+      if (event.type === 'file-start') {
+        if (limitReached) {
+          child.kill()
+          break
+        }
+        continue
+      }
+      const result = event.line
+      const key = `${result.path}:${result.line}`
+      if (key === previousKey) continue
+      previousKey = key
+      if (result.kind === 'match' && limitReached) {
         child.kill()
         break
+      }
+      items.push(result)
+      if (result.kind === 'match') {
+        matchCount += 1
+        if (matchCount >= input.maxResults) limitReached = true
       }
     }
 
@@ -621,14 +677,21 @@ async function runRipgrep(
   }
 }
 
-function parseRipgrepMatch(line: string, rootPath: string): GrepMatch | undefined {
+type RipgrepEvent = { type: 'file-start' } | { type: 'result'; line: GrepResultLine }
+
+function parseRipgrepEvent(line: string, rootPath: string): RipgrepEvent | undefined {
   let event: unknown
   try {
     event = JSON.parse(line)
   } catch (error: unknown) {
     throw new Error('Grep returned malformed JSON output', { cause: error })
   }
-  if (!isRecord(event) || event.type !== 'match' || !isRecord(event.data)) return undefined
+  if (
+    !isRecord(event)
+    || (event.type !== 'match' && event.type !== 'context' && event.type !== 'begin')
+    || !isRecord(event.data)
+  ) return undefined
+  if (event.type === 'begin') return { type: 'file-start' }
   const path = textField(event.data.path, 'path')
   const text = textField(event.data.lines, 'lines').replace(/\r?\n$/, '')
   const lineNumber = event.data.line_number
@@ -636,11 +699,15 @@ function parseRipgrepMatch(line: string, rootPath: string): GrepMatch | undefine
   const absolutePath = isAbsolute(path) ? path : resolve(rootPath, path)
   assertInside(rootPath, absolutePath, path)
   return {
-    path: absolutePath,
-    line: lineNumber,
-    text: text.length > MAX_GREP_LINE_CHARACTERS
-      ? `${text.slice(0, MAX_GREP_LINE_CHARACTERS - 1)}…`
-      : text,
+    type: 'result',
+    line: {
+      path: absolutePath,
+      line: lineNumber,
+      text: text.length > MAX_GREP_LINE_CHARACTERS
+        ? `${text.slice(0, MAX_GREP_LINE_CHARACTERS - 1)}…`
+        : text,
+      kind: event.type,
+    },
   }
 }
 
@@ -666,11 +733,11 @@ async function assertTextFile(path: string, inputPath: string): Promise<void> {
   }
 }
 
-async function existingAuthorizedFile(
+async function existingAuthorizedEntry(
   project: AgentProject,
   accessMode: FilesystemAccessMode,
   path: string,
-): Promise<string | undefined> {
+): Promise<{ actualPath: string; isFile: boolean } | undefined> {
   let actualPath: string
   try {
     actualPath = await realpath(path)
@@ -683,7 +750,9 @@ async function existingAuthorizedFile(
     return undefined
   }
   try {
-    return (await stat(actualPath)).isFile() ? actualPath : undefined
+    const details = await stat(actualPath)
+    if (!details.isFile() && !details.isDirectory()) return undefined
+    return { actualPath, isFile: details.isFile() }
   } catch {
     return undefined
   }

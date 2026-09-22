@@ -24,7 +24,7 @@ export function createBashTool(
     description: {
       name: 'Bash',
       description:
-        'Run one Bash command with full host-process authority. Use it for builds, tests, Git inspection, and commands not covered by structured Tools. Non-zero exits are returned as results.',
+        'Run one Bash command with full host-process authority. Reserve it for builds, tests, Git, package managers, and operations no structured Tool covers: read files with Read, search text with Grep, discover files and directories with Glob, and modify files with Edit or Write. Pipelines that filter or transform content remain appropriate Bash usage. Non-zero exits are returned as results.',
       parameters: {
         type: 'object',
         properties: {

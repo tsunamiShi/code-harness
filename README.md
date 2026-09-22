@@ -29,7 +29,7 @@ src/
 └─ cli/       命令入口、参数解析、环境配置和终端输出
 ```
 
-`models/openai-compatible-responses-model.ts` 按协议而不是模型品牌命名。它通过 OpenAI-compatible Responses API 连接当前 `.env` 配置的主模型，因此可以使用百炼提供的兼容模型，而不需要为每个模型复制一个 Adapter。Runtime 持久化每个完成 Step 的 Provider Response ID，后续请求通过 `previous_response_id` 只发送新增的用户输入、System Message 或 `function_call_output`，不再重放完整历史。Loop Guard 单独使用 `openai-compatible-chat-text-model.ts`，因为 `ZHIPU/GLM-5.3-Flash` 当前走 Chat Completions，并且 Guard 不需要 Tool Calling。
+`models/openai-compatible-responses-model.ts` 按协议而不是模型品牌命名。它通过 OpenAI-compatible Responses API 连接当前 `.env` 配置的主模型，因此可以使用百炼提供的兼容模型，而不需要为每个模型复制一个 Adapter。第一次请求发送 Project System Message 和用户输入；Runtime 持久化每个完成 Step 的 Provider Response ID，后续请求通过 `previous_response_id` 只发送新增的用户输入或 `function_call_output`，不重复发送 System Message，也不重放完整历史。Loop Guard 单独使用 `openai-compatible-chat-text-model.ts`，因为 `ZHIPU/GLM-5.3-Flash` 当前走 Chat Completions，并且 Guard 不需要 Tool Calling。
 
 ## Filesystem Tools
 
@@ -173,6 +173,7 @@ Reasoning Content 只来自供应商 Responses 输出中的 `reasoning` item（`
 - [ADR-021: Repeat Tool Loop Guard is advisory](docs/decisions/021-repeat-tool-loop-guard-is-advisory.md)
 - [ADR-022: Responses continue from durable Provider state](docs/decisions/022-responses-continue-from-durable-provider-state.md)
 - [ADR-023: No-progress Loop Guard uses Tool effects](docs/decisions/023-no-progress-loop-guard-uses-tool-effects.md)
+- [ADR-024: Responses continuation sends System instructions only once](docs/decisions/024-responses-continuation-sends-system-once.md)
 
 ## 当前限制
 

@@ -222,11 +222,45 @@ test('Read returns absolute paths and supports Primary and Attached Roots', asyn
       { line: 3, text: 'three' },
     ],
     truncated: true,
+    totalLines: 4,
   })
   assert.deepEqual(await executeJson(read, { path: sharedPath }), {
     path: sharedPath,
     lines: [{ line: 1, text: 'attached' }],
     truncated: false,
+    totalLines: 1,
+  })
+})
+
+test('Read reports the total line count so the remaining range can be requested in one call', async t => {
+  const fixture = await createFixture(t)
+  await writeFile(
+    join(fixture.primary, 'long.txt'),
+    Array.from({ length: 30 }, (_, index) => `line ${index + 1}`).join('\n'),
+  )
+  const read = requireTool(fixture.project, 'Read')
+  const path = join(fixture.primary, 'long.txt')
+
+  const first = await executeJson(read, { path, limit: 10 })
+  assert.deepEqual(first, {
+    path,
+    lines: Array.from({ length: 10 }, (_, index) => ({
+      line: index + 1,
+      text: `line ${index + 1}`,
+    })),
+    truncated: true,
+    totalLines: 30,
+  })
+
+  const rest = await executeJson(read, { path, offset: 11, limit: 20 })
+  assert.deepEqual(rest, {
+    path,
+    lines: Array.from({ length: 20 }, (_, index) => ({
+      line: index + 11,
+      text: `line ${index + 11}`,
+    })),
+    truncated: false,
+    totalLines: 30,
   })
 })
 
@@ -258,6 +292,7 @@ test('full access accepts an absolute file outside Project Roots', async t => {
     path,
     lines: [{ line: 1, text: 'outside content' }],
     truncated: false,
+    totalLines: 1,
   })
 })
 
@@ -276,6 +311,38 @@ test('Glob returns sorted absolute files and excludes dependency output', async 
     path: fixture.primary,
     pattern: '**/*.ts',
     files: [join(fixture.primary, 'src', 'a.ts'), join(fixture.primary, 'src', 'b.ts')],
+    truncated: false,
+  })
+})
+
+test('Glob lists directories when includeDirectories is set', async t => {
+  const fixture = await createFixture(t)
+  await mkdir(join(fixture.primary, 'src'))
+  await mkdir(join(fixture.primary, 'docs'))
+  await Promise.all([
+    writeFile(join(fixture.primary, 'README.md'), ''),
+    writeFile(join(fixture.primary, 'src', 'a.ts'), ''),
+  ])
+  const globTool = requireTool(fixture.project, 'Glob')
+
+  const listed = await executeJson(globTool, {
+    path: fixture.primary,
+    pattern: '*',
+    includeDirectories: true,
+  })
+  assert.deepEqual(listed, {
+    path: fixture.primary,
+    pattern: '*',
+    files: [join(fixture.primary, 'README.md')],
+    directories: [join(fixture.primary, 'docs'), join(fixture.primary, 'src')],
+    truncated: false,
+  })
+
+  const filesOnly = await executeJson(globTool, { path: fixture.primary, pattern: '*' })
+  assert.deepEqual(filesOnly, {
+    path: fixture.primary,
+    pattern: '*',
+    files: [join(fixture.primary, 'README.md')],
     truncated: false,
   })
 })
@@ -303,11 +370,79 @@ test('Grep searches regular expressions with file filters and a global result li
     path: fixture.primary,
     pattern: 'agent',
     matches: [
-      { path: join(fixture.primary, 'src', 'a.ts'), line: 1, text: 'Agent runtime' },
-      { path: join(fixture.primary, 'src', 'a.ts'), line: 2, text: 'agent loop' },
+      { path: join(fixture.primary, 'src', 'a.ts'), line: 1, text: 'Agent runtime', kind: 'match' },
+      { path: join(fixture.primary, 'src', 'a.ts'), line: 2, text: 'agent loop', kind: 'match' },
     ],
     limitReached: true,
   })
+})
+
+test('Grep returns surrounding context lines around matches', async t => {
+  const fixture = await createFixture(t)
+  await writeFile(
+    join(fixture.primary, 'a.ts'),
+    'one\ntwo\nAgent\nfour\nfive\nsix\n',
+  )
+  const grep = requireTool(fixture.project, 'Grep')
+
+  const result = await executeJson(grep, {
+    path: fixture.primary,
+    pattern: 'Agent',
+    before: 1,
+    after: 2,
+  })
+
+  assert.deepEqual(result, {
+    path: fixture.primary,
+    pattern: 'Agent',
+    matches: [
+      { path: join(fixture.primary, 'a.ts'), line: 2, text: 'two', kind: 'context' },
+      { path: join(fixture.primary, 'a.ts'), line: 3, text: 'Agent', kind: 'match' },
+      { path: join(fixture.primary, 'a.ts'), line: 4, text: 'four', kind: 'context' },
+      { path: join(fixture.primary, 'a.ts'), line: 5, text: 'five', kind: 'context' },
+    ],
+    limitReached: false,
+  })
+})
+
+test('Grep counts only matching lines toward the result limit', async t => {
+  const fixture = await createFixture(t)
+  await Promise.all([
+    writeFile(join(fixture.primary, 'a.ts'), 'one\nAgent\nthree\n'),
+    writeFile(join(fixture.primary, 'b.ts'), 'uno\nAgent\ntres\n'),
+  ])
+  const grep = requireTool(fixture.project, 'Grep')
+
+  const result = await executeJson(grep, {
+    path: fixture.primary,
+    pattern: 'Agent',
+    after: 1,
+    maxResults: 1,
+  })
+
+  assert.deepEqual(result, {
+    path: fixture.primary,
+    pattern: 'Agent',
+    matches: [
+      { path: join(fixture.primary, 'a.ts'), line: 2, text: 'Agent', kind: 'match' },
+      { path: join(fixture.primary, 'a.ts'), line: 3, text: 'three', kind: 'context' },
+    ],
+    limitReached: true,
+  })
+})
+
+test('Grep rejects out-of-range context parameters', async t => {
+  const fixture = await createFixture(t)
+  const grep = requireTool(fixture.project, 'Grep')
+
+  await assert.rejects(
+    grep.execute({ path: fixture.primary, pattern: 'Agent', before: 51 }),
+    /before must be an integer from 1 through 50/,
+  )
+  await assert.rejects(
+    grep.execute({ path: fixture.primary, pattern: 'Agent', after: 0 }),
+    /after must be an integer from 1 through 50/,
+  )
 })
 
 test('Grep reports invalid regular expressions as tool errors', async t => {

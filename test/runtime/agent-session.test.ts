@@ -804,7 +804,7 @@ test('returns a tool error to the model and restores it with the completed turn'
   ])
 })
 
-test('continues Responses with only new function outputs and user input', async () => {
+test('sends Project instructions once before continuing Responses with only incremental input', async () => {
   const requests: Array<{
     messages: readonly Message[]
     previousResponseId?: string
@@ -844,20 +844,33 @@ test('continues Responses with only new function outputs and user input', async 
     model,
     tools: [read],
     store: new MemorySessionStore(),
+    project: {
+      id: 'project-1',
+      name: 'demo',
+      roots: [{ path: '/project', role: 'primary' }],
+    },
   })
 
   assert.equal(await session.send('first'), 'first done')
   assert.equal(await session.send('second'), 'second done')
-  assert.deepEqual(requests, [
+  const firstMessage = requests[0]?.messages[0]
+  assert.equal(firstMessage?.role, 'system')
+  assert.match(firstMessage.content, /^Project: demo$/m)
+  assert.deepEqual(requests.map(request => ({
+    roles: request.messages.map(message => message.role),
+    ...(request.previousResponseId === undefined
+      ? {}
+      : { previousResponseId: request.previousResponseId }),
+  })), [
     {
-      messages: [{ role: 'user', content: 'first' }],
+      roles: ['system', 'user'],
     },
     {
-      messages: [{ role: 'tool', toolCallId: 'call-1', content: 'source' }],
+      roles: ['tool'],
       previousResponseId: 'response-1',
     },
     {
-      messages: [{ role: 'user', content: 'second' }],
+      roles: ['user'],
       previousResponseId: 'response-2',
     },
   ])
@@ -865,6 +878,11 @@ test('continues Responses with only new function outputs and user input', async 
 
 test('restores the last Responses continuation after reopening a session', async () => {
   const store = new MemorySessionStore()
+  const project = {
+    id: 'project-1',
+    name: 'demo',
+    roots: [{ path: '/project', role: 'primary' as const }],
+  }
   const first = await AgentSession.create({
     model: {
       async generate() {
@@ -877,6 +895,7 @@ test('restores the last Responses continuation after reopening a session', async
     },
     tools: [],
     store,
+    project,
   })
   await first.send('first')
 
@@ -894,6 +913,7 @@ test('restores the last Responses continuation after reopening a session', async
     },
     tools: [],
     store,
+    project,
   })
 
   assert.equal(await resumed.send('second'), 'second done')

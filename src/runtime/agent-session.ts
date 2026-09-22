@@ -444,15 +444,7 @@ export class AgentSession {
 
   private requestMessages(): readonly Message[] {
     if (this.providerContinuation === undefined) return this.modelMessages()
-    const delta = this.messages.slice(this.providerContinuation.syncedMessageCount)
-    if (!this.options.project) return delta
-    return [
-      {
-        role: 'system',
-        content: projectInstructions(this.options.project, this.options.accessMode),
-      },
-      ...delta,
-    ]
+    return this.messages.slice(this.providerContinuation.syncedMessageCount)
   }
 
   private modelMessages(): readonly Message[] {

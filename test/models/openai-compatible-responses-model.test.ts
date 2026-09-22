@@ -57,10 +57,7 @@ test('uses the Responses endpoint and maps incremental function inputs and outpu
   })
 
   const output = await model.generate({
-    messages: [
-      { role: 'system', content: 'Use tools.' },
-      { role: 'tool', toolCallId: 'call-1', content: 'first file' },
-    ],
+    messages: [{ role: 'tool', toolCallId: 'call-1', content: 'first file' }],
     tools: [readTool],
     maxTokens: 4096,
     previousResponseId: 'response-1',
@@ -69,14 +66,11 @@ test('uses the Responses endpoint and maps incremental function inputs and outpu
   assert.equal(requestURL, 'https://provider.example/compatible-mode/v1/responses')
   assert.deepEqual(requestBody, {
     model: 'test-model',
-    input: [
-      { role: 'system', content: 'Use tools.' },
-      {
-        type: 'function_call_output',
-        call_id: 'call-1',
-        output: 'first file',
-      },
-    ],
+    input: [{
+      type: 'function_call_output',
+      call_id: 'call-1',
+      output: 'first file',
+    }],
     previous_response_id: 'response-1',
     max_output_tokens: 4096,
     tools: [{
