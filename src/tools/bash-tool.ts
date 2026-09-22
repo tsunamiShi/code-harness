@@ -19,6 +19,7 @@ export function createBashTool(
   }
 
   return {
+    effect: 'execute',
     parallelSafe: false,
     description: {
       name: 'Bash',

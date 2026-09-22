@@ -56,7 +56,7 @@ Full Access 模式额外暴露 `Bash`。它要求一个绝对 `cwd`，返回退�
 
 模型可以在同一个 Step 返回多个 Tool Calls。`Read / Glob / Grep` 声明为 parallel-safe，因此同批调用会并行执行并按模型给出的顺序写回结果。Agent Loop 不限制 Step 数量；`AGENT_MAX_TOKENS` 是可选的单次 Model Invocation 输出上限，未配置时不发送 `max_output_tokens`，由 Provider 和 Model 决定默认值。显式配置的上限不累计整个 Turn 的消耗。供应商以 `status=incomplete` 和 `reason=max_output_tokens` 截断响应时，Runtime 将本次调用视为失败，不把不完整文本误判成最终答案。
 
-Loop Guard 只观察连续、工具名相同且参数规范化后完全相同的 Tool Calls，默认在第 3、5、8 次重复时触发。命中阈值后，Runtime 才使用独立的 `ZHIPU/GLM-5.3-Flash` 调用读取原始用户请求、重复调用及最新结果；Flash 可以不提醒，也可以生成一条以普通 User Message 形式加入上下文的弱提醒。Guard 不修改主 Agent 的 System Prompt，不撤掉 Tools、不终止 Turn，调用失败时也不会阻塞主 Agent。`AGENT_LOOP_GUARD_THRESHOLDS` 调整阈值，`DASHSCOPE_GUARD_MODEL` 可覆盖 Guard 模型。
+Loop Guard 在每个完成的 Tool Step 后运行两个可组合 Policy。精确重复 Policy 观察工具名相同且参数规范化后完全相同的连续 Tool Calls，默认在第 3、5、8 次重复时使用独立的 `ZHIPU/GLM-5.3-Flash` 判断是否需要提醒；`AGENT_LOOP_GUARD_THRESHOLDS` 调整阈值，`DASHSCOPE_GUARD_MODEL` 覆盖模型。无进展 Policy 按 Step 统计连续没有成功 `Edit / Write` 的执行，默认在第 12、24 个 Step 直接生成固定提醒，`AGENT_NO_PROGRESS_THRESHOLDS` 调整阈值，不产生额外模型请求。Bash 属于副作用不透明的 `execute` Tool，不被当作明确文件进展。两种提醒都作为普通 User Message 加入上下文，不修改 System Prompt、不撤掉 Tools、不终止 Turn。
 
 Turn 中每个完成的 Tool Call 都会立即持久化。模型请求或进程异常后，Session 保留同一个 Turn 的用户输入、已完成 Tool Calls 和 Tool Results；使用 `--session` 重连时 CLI 自动继续该 Turn，失败后也可输入 `/retry` 再试。进程退出时仍处于 running 且结果尚未持久化的 Tool Call 不会被自动重放，因为 `Edit` 或 `Bash` 可能已经产生副作用；恢复过程会为它写入“结果未知”的 Tool Error，让模型检查当前状态后继续。
 
@@ -129,7 +129,7 @@ CLI 会显示 Primary Root 和新 Session ID。正常退出后可以恢复：
 pnpm chat -- --session <session-id>
 ```
 
-每个 Turn 会打印结构化 Execution Trace：Step 编号、模型请求中的 Message/Tool 数量、模型耗时、供应商返回的 Reasoning Content、Tool 执行、最终 Content 和 Turn 总耗时。默认 `AGENT_TRACE=compact`，同一批成功的 `Read / Glob / Grep / LSP` 会折叠成单行数量、类型、少量目标和最慢耗时；失败会自动展开，`Edit / Write / Bash` 始终显示参数和有界结果预览。使用 `AGENT_TRACE=verbose` 可恢复每个 Tool Call 的逐项参数、调度方式和结果预览。Trace Mode 只改变终端展示，不改变数据库记录或发给模型的 Tool Result。
+每个 Turn 会打印结构化 Execution Trace：Step 编号、模型请求中的 Message/Tool 数量、模型耗时、供应商返回的 Reasoning Content、Tool 执行、最终 Content 和 Turn 总耗时。交互式终端底部还会每秒刷新截至当前的 Turn 耗时；新 Trace 输出会先清除该临时行再重新显示，完成或失败后则以 Runtime 给出的总耗时为准。非交互输出不会持续刷新，避免污染重定向日志。默认 `AGENT_TRACE=compact`，同一批成功的 `Read / Glob / Grep / LSP` 会折叠成单行数量、类型、少量目标和最慢耗时；失败会自动展开，`Edit / Write / Bash` 始终显示参数和有界结果预览。使用 `AGENT_TRACE=verbose` 可恢复每个 Tool Call 的逐项参数、调度方式和结果预览。Trace Mode 只改变终端展示，不改变数据库记录或发给模型的 Tool Result。
 
 Final Content 会把模型返回的 Markdown 渲染成适合当前终端宽度的标题、列表、强调、代码块、表格和链接预览；数据库仍保存原始 Markdown。展开的 Tool Result 默认最多保留开头和结尾共 800 个原始字符，中间标明省略数量；可用 `AGENT_TRACE_MAX_RESULT_CHARS` 调整。完整结果仍会写入数据库并反馈给模型。MySQL 还会持久化 Model Invocation 的输入规模、Token Usage、结束原因和错误，以及每次实际 Provider Attempt 的 HTTP 状态、Request ID、错误与时间。
 
@@ -145,7 +145,7 @@ Reasoning Content 只来自供应商 Responses 输出中的 `reasoning` item（`
 - `agent_tool_calls`：Step 内每个 Tool Call 的参数、状态、结果和错误。
 - `agent_model_invocations`：每个 Step 对应的逻辑模型调用，包括失败后未产生 Step 的调用。
 - `agent_model_attempts`：一次 Model Invocation 下每个实际供应商请求及 SDK 重试。
-- `agent_loop_guard_reminders`：精确重复 Tool Call 命中阈值后生成的弱提醒。
+- `agent_loop_guard_reminders`：精确重复或连续无文件修改命中阈值后生成的弱提醒。
 - `agent_schema_migrations`：已应用的数据库结构版本。
 
 ## Architecture decisions
@@ -172,6 +172,7 @@ Reasoning Content 只来自供应商 Responses 输出中的 `reasoning` item（`
 - [ADR-020: Max Tokens is an optional Provider override](docs/decisions/020-max-tokens-is-an-optional-provider-override.md)
 - [ADR-021: Repeat Tool Loop Guard is advisory](docs/decisions/021-repeat-tool-loop-guard-is-advisory.md)
 - [ADR-022: Responses continue from durable Provider state](docs/decisions/022-responses-continue-from-durable-provider-state.md)
+- [ADR-023: No-progress Loop Guard uses Tool effects](docs/decisions/023-no-progress-loop-guard-uses-tool-effects.md)
 
 ## 当前限制
 

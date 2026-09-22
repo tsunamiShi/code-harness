@@ -13,10 +13,9 @@ import {
 import type { Message, Model, ModelOutput, Tool, ToolCall } from './types.ts'
 import {
   type LoopGuard,
-  type LoopGuardCall,
   type LoopGuardReminder,
   type LoopGuardReviewInput,
-  trailingRepeatCount,
+  type LoopGuardStep,
 } from './loop-guard.ts'
 
 const INTERRUPTED_TOOL_ERROR = 'Error: execution stopped before this Tool result was persisted; the Tool was not run again because its side effects are unknown'
@@ -28,7 +27,7 @@ export interface AgentSessionOptions {
   project?: AgentProject
   accessMode?: FilesystemAccessMode
   maxTokens?: number
-  loopGuard?: LoopGuard
+  loopGuards?: readonly LoopGuard[]
   onEvent?: (event: AgentEvent) => void
 }
 
@@ -58,8 +57,9 @@ export type AgentEvent =
       type: 'loop-guard.reminded'
       turnId: string
       afterStep: number
-      toolName: string
-      repeatCount: number
+      kind: LoopGuardReminder['kind']
+      metric: number
+      summary: string
       content: string
     }
   | {
@@ -246,45 +246,43 @@ export class AgentSession {
     completedReminders: readonly AgentLoopGuardReminder[],
   ): Promise<string> {
     const reminders = [...completedReminders]
-    const calls = loopGuardCalls(completedSteps)
+    const guardSteps = loopGuardSteps(completedSteps, this.toolsByName)
 
     const reviewIfDue = async (afterStep: number): Promise<void> => {
-      const loopGuard = this.options.loopGuard
-      const call = calls.at(-1)
-      if (loopGuard === undefined || call === undefined) return
-      const repeatCount = trailingRepeatCount(calls)
-      if (!loopGuard.thresholds.includes(repeatCount)) return
-      if (reminders.some(reminder =>
-        reminder.afterStep === afterStep
-        && reminder.toolName === call.name
-        && reminder.repeatCount === repeatCount
-      )) return
-      const reminder = await safelyReviewLoop(loopGuard, {
-        originalPrompt,
-        repeatCount,
-        call,
-      })
-      if (reminder === undefined) return
-      const durableReminder: AgentLoopGuardReminder = {
-        reminderNumber: reminders.length + 1,
-        afterStep,
-        ...reminder,
+      for (const loopGuard of this.options.loopGuards ?? []) {
+        const reminder = await safelyReviewLoop(loopGuard, {
+          originalPrompt,
+          steps: guardSteps,
+          reminders,
+        })
+        if (reminder === undefined) continue
+        if (reminders.some(existing =>
+          existing.afterStep === afterStep
+          && existing.kind === reminder.kind
+          && existing.metric === reminder.metric
+        )) continue
+        const durableReminder: AgentLoopGuardReminder = {
+          reminderNumber: reminders.length + 1,
+          afterStep,
+          ...reminder,
+        }
+        await this.options.store.record(this.id, {
+          type: 'loop-guard.reminded',
+          turnId,
+          ...durableReminder,
+        })
+        reminders.push(durableReminder)
+        this.emit({
+          type: 'loop-guard.reminded',
+          turnId,
+          afterStep,
+          kind: reminder.kind,
+          metric: reminder.metric,
+          summary: reminder.summary,
+          content: reminder.content,
+        })
+        this.messages.push({ role: 'user', content: reminder.content })
       }
-      await this.options.store.record(this.id, {
-        type: 'loop-guard.reminded',
-        turnId,
-        ...durableReminder,
-      })
-      reminders.push(durableReminder)
-      this.emit({
-        type: 'loop-guard.reminded',
-        turnId,
-        afterStep,
-        toolName: reminder.toolName,
-        repeatCount: reminder.repeatCount,
-        content: reminder.content,
-      })
-      this.messages.push({ role: 'user', content: reminder.content })
     }
 
     await reviewIfDue(firstStep - 1)
@@ -405,15 +403,17 @@ export class AgentSession {
           content: execution.content,
         })
       }
-      for (const execution of executions) {
-        calls.push({
+      guardSteps.push({
+        stepNumber: step,
+        calls: executions.map(execution => ({
           name: execution.call.name,
           arguments: structuredClone(execution.call.arguments),
           result: execution.content,
           failed: execution.failed,
-        })
-        await reviewIfDue(step)
-      }
+          effect: this.toolsByName.get(execution.call.name)?.effect ?? 'execute',
+        })),
+      })
+      await reviewIfDue(step)
     }
   }
 
@@ -594,7 +594,7 @@ export async function runAgent({
   tools,
   prompt,
   maxTokens,
-  loopGuard,
+  loopGuards,
   onEvent,
 }: RunAgentOptions): Promise<string> {
   const session = await AgentSession.create({
@@ -602,7 +602,7 @@ export async function runAgent({
     tools,
     store: new MemorySessionStore(),
     ...(maxTokens === undefined ? {} : { maxTokens }),
-    ...(loopGuard === undefined ? {} : { loopGuard }),
+    ...(loopGuards === undefined ? {} : { loopGuards }),
     ...(onEvent === undefined ? {} : { onEvent }),
   })
   return await session.send(prompt)
@@ -621,7 +621,10 @@ function nextStepNumber(turn: AgentTurn): number {
   return Math.max(0, ...turn.steps.map(step => step.stepNumber)) + 1
 }
 
-function loopGuardCalls(steps: readonly AgentStep[]): LoopGuardCall[] {
+function loopGuardSteps(
+  steps: readonly AgentStep[],
+  toolsByName: ReadonlyMap<string, Tool>,
+): LoopGuardStep[] {
   return steps.flatMap(step => {
     if (
       step.status !== 'completed'
@@ -629,15 +632,17 @@ function loopGuardCalls(steps: readonly AgentStep[]): LoopGuardCall[] {
     ) {
       return []
     }
-    return step.output.executions.flatMap(execution => {
+    const calls = step.output.executions.flatMap(execution => {
       const result = execution.result ?? execution.error
       return result === undefined ? [] : [{
         name: execution.call.name,
         arguments: structuredClone(execution.call.arguments),
         result,
         failed: execution.status === 'failed',
+        effect: toolsByName.get(execution.call.name)?.effect ?? 'execute',
       }]
     })
+    return calls.length === 0 ? [] : [{ stepNumber: step.stepNumber, calls }]
   })
 }
 

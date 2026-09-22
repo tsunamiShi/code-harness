@@ -5,16 +5,18 @@ import { OpenAICompatibleResponsesModel } from '../models/openai-compatible-resp
 import { OpenAICompatibleChatTextModel } from '../models/openai-compatible-chat-text-model.ts'
 import { primaryRoot, ProjectCatalog } from '../projects/project.ts'
 import { AgentSession } from '../runtime/agent-session.ts'
-import { ModelLoopGuard } from '../runtime/loop-guard.ts'
+import { ModelRepeatLoopGuard, NoProgressLoopGuard } from '../runtime/loop-guard.ts'
 import { MysqlAgentStore } from '../storage/mysql-agent-store.ts'
 import { createCodeTools } from '../tools/code-tools.ts'
 import { readChatTarget } from './chat-arguments.ts'
 import { createConsoleTrace } from './console-trace.ts'
 import { createMarkdownRenderer } from './markdown.ts'
+import { createTurnElapsedDisplay } from './turn-elapsed.ts'
 import {
   agentMaxTokensFromEnvironment,
   agentLoopGuardModelFromEnvironment,
   agentLoopGuardThresholdsFromEnvironment,
+  agentNoProgressThresholdsFromEnvironment,
   agentTraceMaxResultCharsFromEnvironment,
   agentTraceModeFromEnvironment,
   mysqlOptionsFromEnvironment,
@@ -31,6 +33,7 @@ const tools = createCodeTools(project, target.accessMode)
 const traceMode = agentTraceModeFromEnvironment()
 const traceMaxResultChars = agentTraceMaxResultCharsFromEnvironment()
 const loopGuardThresholds = agentLoopGuardThresholdsFromEnvironment()
+const noProgressThresholds = agentNoProgressThresholdsFromEnvironment()
 const maxTokens = agentMaxTokensFromEnvironment()
 const apiKey = requiredEnvironment('DASHSCOPE_API_KEY')
 const baseURL = requiredEnvironment('DASHSCOPE_BASE_URL')
@@ -45,23 +48,31 @@ const loopGuardModel = new OpenAICompatibleChatTextModel({
   baseURL,
   model: loopGuardModelName,
 })
+const trace = createConsoleTrace({
+  write: text => console.log(text),
+  mode: traceMode,
+  maxToolResultChars: traceMaxResultChars,
+  colors: stdout.isTTY && process.env.NO_COLOR === undefined,
+  renderMarkdown: createMarkdownRenderer({
+    width: Math.max(40, (stdout.columns ?? 100) - 8),
+  }),
+})
+const elapsedDisplay = createTurnElapsedDisplay({
+  enabled: stdout.isTTY === true,
+  write: text => stdout.write(text),
+})
 const sessionOptions = {
   model,
-  loopGuard: new ModelLoopGuard(loopGuardModel, { thresholds: loopGuardThresholds }),
+  loopGuards: [
+    new ModelRepeatLoopGuard(loopGuardModel, { thresholds: loopGuardThresholds }),
+    new NoProgressLoopGuard({ thresholds: noProgressThresholds }),
+  ],
   tools,
   store,
   project,
   accessMode: target.accessMode,
   ...(maxTokens === undefined ? {} : { maxTokens }),
-  onEvent: createConsoleTrace({
-    write: text => console.log(text),
-    mode: traceMode,
-    maxToolResultChars: traceMaxResultChars,
-    colors: stdout.isTTY && process.env.NO_COLOR === undefined,
-    renderMarkdown: createMarkdownRenderer({
-      width: Math.max(40, (stdout.columns ?? 100) - 8),
-    }),
-  }),
+  onEvent: (event: Parameters<typeof trace>[0]) => elapsedDisplay.handle(event, () => trace(event)),
 }
 const session = target.kind === 'session'
   ? await AgentSession.resume(target.id, sessionOptions)
@@ -72,7 +83,9 @@ console.log(`Project: ${project.name}`)
 console.log(`Working directory: ${primaryRoot(project).path}`)
 console.log(`Filesystem access: ${target.accessMode}`)
 console.log(`Trace: ${traceMode} · Tool Result preview: ${traceMaxResultChars} chars`)
-console.log(`Loop Guard: ${loopGuardModelName} reminder at exact repeats ${loopGuardThresholds.join('/')}`)
+console.log(
+  `Loop Guard: exact repeats ${loopGuardThresholds.join('/')} via ${loopGuardModelName} · no progress ${noProgressThresholds.join('/')} steps`,
+)
 console.log(`Session: ${session.id}`)
 console.log('Enter /exit to quit or /retry to continue a failed Turn. Resume later with: pnpm chat -- --session <session-id>')
 
@@ -106,6 +119,7 @@ try {
     }
   }
 } finally {
+  elapsedDisplay.close()
   terminal.close()
   try {
     await Promise.all(tools.map(async tool => await tool.close?.()))

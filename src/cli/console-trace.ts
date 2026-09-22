@@ -84,7 +84,7 @@ export function createConsoleTrace(options: ConsoleTraceOptions): (event: AgentE
         return
       case 'loop-guard.reminded':
         options.write(
-          `│  ${color.yellow('!')} ${color.bold('Loop Guard reminder')} ${color.dim(`${event.toolName} × ${event.repeatCount} · after step ${event.afterStep}`)}`,
+          `│  ${color.yellow('!')} ${color.bold('Loop Guard reminder')} ${color.dim(`${event.summary} · after step ${event.afterStep}`)}`,
         )
         options.write(block('Advice', event.content, color.yellow))
         return

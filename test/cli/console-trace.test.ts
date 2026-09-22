@@ -160,8 +160,9 @@ test('renders Loop Guard reminders as execution-chain checkpoints', () => {
     type: 'loop-guard.reminded',
     turnId: 'turn',
     afterStep: 3,
-    toolName: 'Read',
-    repeatCount: 3,
+    kind: 'exact-repeat',
+    metric: 3,
+    summary: 'Read × 3',
     content: 'Inspect the existing result before repeating the call.',
   })
 

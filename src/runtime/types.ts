@@ -17,6 +17,8 @@ export interface ToolDescription {
   parameters: Record<string, unknown>
 }
 
+export type ToolEffect = 'observe' | 'mutate' | 'execute'
+
 export interface ModelUsage {
   inputTokens: number
   outputTokens: number
@@ -80,6 +82,7 @@ export interface Model {
 
 export interface Tool {
   readonly description: ToolDescription
+  readonly effect: ToolEffect
   readonly parallelSafe?: boolean
   execute(arguments_: unknown): Promise<string>
   close?(): Promise<void>

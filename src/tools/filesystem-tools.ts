@@ -39,6 +39,7 @@ export function createFilesystemTools(
 
   return [
     {
+      effect: 'observe',
       parallelSafe: true,
       description: {
         name: 'Read',
@@ -79,6 +80,7 @@ export function createFilesystemTools(
       },
     },
     {
+      effect: 'mutate',
       parallelSafe: false,
       description: {
         name: 'Edit',
@@ -123,6 +125,7 @@ export function createFilesystemTools(
       },
     },
     {
+      effect: 'mutate',
       parallelSafe: false,
       description: {
         name: 'Write',
@@ -158,6 +161,7 @@ export function createFilesystemTools(
       },
     },
     {
+      effect: 'observe',
       parallelSafe: true,
       description: {
         name: 'Glob',
@@ -198,6 +202,7 @@ export function createFilesystemTools(
       },
     },
     {
+      effect: 'observe',
       parallelSafe: true,
       description: {
         name: 'Grep',

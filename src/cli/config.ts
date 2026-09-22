@@ -4,6 +4,7 @@ export type AgentTraceMode = 'compact' | 'verbose'
 
 const DEFAULT_AGENT_TRACE_MAX_RESULT_CHARS = 800
 const DEFAULT_AGENT_LOOP_GUARD_THRESHOLDS = [3, 5, 8] as const
+const DEFAULT_AGENT_NO_PROGRESS_THRESHOLDS = [12, 24] as const
 const DEFAULT_AGENT_LOOP_GUARD_MODEL = 'ZHIPU/GLM-5.3-Flash'
 
 export function mysqlOptionsFromEnvironment(): MysqlAgentStoreOptions {
@@ -53,13 +54,23 @@ export function agentTraceMaxResultCharsFromEnvironment(): number {
 export function agentLoopGuardThresholdsFromEnvironment(): readonly number[] {
   const value = process.env.AGENT_LOOP_GUARD_THRESHOLDS
   if (value === undefined) return DEFAULT_AGENT_LOOP_GUARD_THRESHOLDS
+  return readThresholds(value, 'AGENT_LOOP_GUARD_THRESHOLDS')
+}
+
+export function agentNoProgressThresholdsFromEnvironment(): readonly number[] {
+  const value = process.env.AGENT_NO_PROGRESS_THRESHOLDS
+  if (value === undefined) return DEFAULT_AGENT_NO_PROGRESS_THRESHOLDS
+  return readThresholds(value, 'AGENT_NO_PROGRESS_THRESHOLDS')
+}
+
+function readThresholds(value: string, name: string): readonly number[] {
   const thresholds = value.split(',').map(part => Number(part.trim()))
   if (
     thresholds.length === 0
     || thresholds.some(threshold => !Number.isSafeInteger(threshold) || threshold < 2)
     || new Set(thresholds).size !== thresholds.length
   ) {
-    throw new Error(`Invalid AGENT_LOOP_GUARD_THRESHOLDS: ${value}`)
+    throw new Error(`Invalid ${name}: ${value}`)
   }
   return thresholds.sort((left, right) => left - right)
 }

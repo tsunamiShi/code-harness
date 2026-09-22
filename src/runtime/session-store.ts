@@ -90,8 +90,9 @@ export type SessionRecord =
       turnId: string
       reminderNumber: number
       afterStep: number
-      toolName: string
-      repeatCount: number
+      kind: LoopGuardReminder['kind']
+      metric: number
+      summary: string
       content: string
     }
   | {

@@ -5,6 +5,7 @@ import {
   agentMaxTokensFromEnvironment,
   agentLoopGuardModelFromEnvironment,
   agentLoopGuardThresholdsFromEnvironment,
+  agentNoProgressThresholdsFromEnvironment,
   agentTraceMaxResultCharsFromEnvironment,
   agentTraceModeFromEnvironment,
 } from '../../src/cli/config.ts'
@@ -50,6 +51,26 @@ test('configures Loop Guard repeat thresholds and its independent model', () => 
     else process.env.AGENT_LOOP_GUARD_THRESHOLDS = previousThresholds
     if (previousModel === undefined) delete process.env.DASHSCOPE_GUARD_MODEL
     else process.env.DASHSCOPE_GUARD_MODEL = previousModel
+  }
+})
+
+test('configures deterministic no-progress reminder thresholds', () => {
+  const previous = process.env.AGENT_NO_PROGRESS_THRESHOLDS
+  try {
+    delete process.env.AGENT_NO_PROGRESS_THRESHOLDS
+    assert.deepEqual(agentNoProgressThresholdsFromEnvironment(), [12, 24])
+
+    process.env.AGENT_NO_PROGRESS_THRESHOLDS = '24, 12'
+    assert.deepEqual(agentNoProgressThresholdsFromEnvironment(), [12, 24])
+
+    process.env.AGENT_NO_PROGRESS_THRESHOLDS = '0,12'
+    assert.throws(
+      agentNoProgressThresholdsFromEnvironment,
+      /Invalid AGENT_NO_PROGRESS_THRESHOLDS/,
+    )
+  } finally {
+    if (previous === undefined) delete process.env.AGENT_NO_PROGRESS_THRESHOLDS
+    else process.env.AGENT_NO_PROGRESS_THRESHOLDS = previous
   }
 })
 

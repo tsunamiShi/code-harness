@@ -88,6 +88,7 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
       },
     }
     const search: Tool = {
+      effect: 'observe',
       parallelSafe: true,
       description: {
         name: 'search',
@@ -291,34 +292,37 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
       tools: [search],
       store,
       project: restoredProject,
-      loopGuard: {
-        thresholds: [3],
+      loopGuards: [{
         async review(input) {
+          if (input.steps.length !== 3) return undefined
           return {
-            toolName: input.call.name,
-            repeatCount: input.repeatCount,
+            kind: 'exact-repeat',
+            metric: 3,
+            summary: 'search × 3',
             content: 'Loop Guard reminder: inspect the existing result.',
           }
         },
-      },
+      }],
     })
     assert.equal(await guarded.send('Can this be answered?'), 'guarded result')
     const guardedSnapshot = await store.loadSession(guarded.id)
     assert.deepEqual(guardedSnapshot?.turns[0]?.loopGuardReminders, [{
       reminderNumber: 1,
       afterStep: 3,
-      toolName: 'search',
-      repeatCount: 3,
+      kind: 'exact-repeat',
+      metric: 3,
+      summary: 'search × 3',
       content: 'Loop Guard reminder: inspect the existing result.',
     }])
     const [guardRows] = await admin.query<(RowDataPacket & {
       reminder_number: number
       after_step: number
-      tool_name: string
-      repeat_count: number
+      reminder_kind: string
+      metric: number
+      summary: string
       content: string
     })[]>(
-      `SELECT reminder_number, after_step, tool_name, repeat_count, content
+      `SELECT reminder_number, after_step, reminder_kind, metric, summary, content
        FROM \`${database}\`.agent_loop_guard_reminders
        WHERE turn_id = ?`,
       [guardedSnapshot?.turns[0]?.id],
@@ -326,8 +330,9 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
     assert.deepEqual(guardRows.map(row => ({ ...row })), [{
       reminder_number: 1,
       after_step: 3,
-      tool_name: 'search',
-      repeat_count: 3,
+      reminder_kind: 'exact-repeat',
+      metric: 3,
+      summary: 'search × 3',
       content: 'Loop Guard reminder: inspect the existing result.',
     }])
   } finally {

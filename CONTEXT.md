@@ -15,12 +15,16 @@ Turn 内由模型推理、可选 Tool Call Batch 执行和结果反馈组成的�
 _Avoid_: Session、Turn
 
 **Loop Guard**:
-观察 Turn 内连续、工具名相同且参数规范化后完全相同的 Tool Calls 的 Runtime Policy。命中配置阈值时，它可以请求独立小模型生成弱提醒；不按 Step 数量审查，不阻塞 Tool Call，也不终止 Turn。
+在 Tool Step 完成后观察执行轨迹的 Runtime Policy。当前 Policy 分别识别精确重复 Tool Call，以及连续多个 Step 没有成功文件修改的无进展状态；它们只生成弱提醒，不阻塞 Tool Call，也不终止 Turn。
 _Avoid_: Max Steps、Request Timeout
 
 **Loop Guard Reminder**:
-Loop Guard 在精确重复链命中阈值后产生并持久化的建议性 Message。它作为普通 User Message 进入主模型上下文，不属于 System Prompt，也不拥有 stop、redirect 或 Tool 授权能力。
+Loop Guard 命中确定性阈值后产生并持久化的建议性 Message。它作为普通 User Message 进入主模型上下文，不属于 System Prompt，也不拥有 stop、redirect 或 Tool 授权能力。精确重复 Policy 可以请求独立小模型决定是否提醒；无进展 Policy 只生成固定文本。
 _Avoid_: Model Invocation、Tool Call
+
+**Tool Effect**:
+Runtime 对 Tool 行为的静态分类。`observe` 读取状态，`mutate` 可以产生持久文件修改，`execute` 运行无法由 Runtime 精确判断副作用的命令。无进展 Policy 只把成功的 `mutate` Tool Call 视为文件进展。
+_Avoid_: Tool Result、Filesystem Access Mode
 
 **Model**:
 根据当前 Messages 和可用 Tools 返回最终答案或 Tool Call Batch 的决策能力。

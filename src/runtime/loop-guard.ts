@@ -1,4 +1,4 @@
-import type { Model } from './types.ts'
+import type { Model, ToolEffect } from './types.ts'
 
 const REVIEW_MAX_TOKENS = 2_048
 
@@ -7,29 +7,35 @@ export interface LoopGuardCall {
   arguments: unknown
   result: string
   failed: boolean
+  effect: ToolEffect
 }
 
 export interface LoopGuardReviewInput {
   originalPrompt: string
-  repeatCount: number
-  call: LoopGuardCall
+  steps: readonly LoopGuardStep[]
+  reminders: readonly LoopGuardReminder[]
+}
+
+export interface LoopGuardStep {
+  stepNumber: number
+  calls: readonly LoopGuardCall[]
 }
 
 export interface LoopGuardReminder {
-  toolName: string
-  repeatCount: number
+  kind: 'exact-repeat' | 'no-progress'
+  metric: number
+  summary: string
   content: string
 }
 
-/** Reviews exact repeat-call chains without blocking or terminating the Agent Loop. */
+/** Reviews completed Tool Steps without blocking or terminating the Agent Loop. */
 export interface LoopGuard {
-  readonly thresholds: readonly number[]
   review(input: LoopGuardReviewInput): Promise<LoopGuardReminder | undefined>
 }
 
 /** Uses a small independent model only after deterministic repeat detection reaches a threshold. */
-export class ModelLoopGuard implements LoopGuard {
-  readonly thresholds: readonly number[]
+export class ModelRepeatLoopGuard implements LoopGuard {
+  private readonly thresholds: readonly number[]
 
   constructor(
     private readonly model: Model,
@@ -39,6 +45,11 @@ export class ModelLoopGuard implements LoopGuard {
   }
 
   async review(input: LoopGuardReviewInput): Promise<LoopGuardReminder | undefined> {
+    const calls = input.steps.flatMap(step => step.calls)
+    const call = calls.at(-1)
+    if (call === undefined) return undefined
+    const repeatCount = trailingRepeatCount(calls)
+    if (!this.thresholds.includes(repeatCount)) return undefined
     try {
       const output = await this.model.generate({
         messages: [{
@@ -52,10 +63,10 @@ export class ModelLoopGuard implements LoopGuard {
             'Do not claim authority to stop execution and do not output JSON.',
             '',
             `Original user request: ${input.originalPrompt}`,
-            `Tool: ${input.call.name}`,
-            `Consecutive identical calls: ${input.repeatCount}`,
-            `Arguments: ${truncate(canonicalJson(input.call.arguments), 500)}`,
-            `Latest result (${input.call.failed ? 'failed' : 'completed'}): ${truncate(input.call.result, 1_500)}`,
+            `Tool: ${call.name}`,
+            `Consecutive identical calls: ${repeatCount}`,
+            `Arguments: ${truncate(canonicalJson(call.arguments), 500)}`,
+            `Latest result (${call.failed ? 'failed' : 'completed'}): ${truncate(call.result, 1_500)}`,
           ].join('\n'),
         }],
         tools: [],
@@ -65,14 +76,55 @@ export class ModelLoopGuard implements LoopGuard {
       const content = output.content.trim()
       if (content.length === 0 || content === 'NO_REMINDER') return undefined
       return {
-        toolName: input.call.name,
-        repeatCount: input.repeatCount,
-        content: `Loop Guard reminder (${input.call.name} × ${input.repeatCount}):\n${content}`,
+        kind: 'exact-repeat',
+        metric: repeatCount,
+        summary: `${call.name} × ${repeatCount}`,
+        content: `Loop Guard reminder (${call.name} × ${repeatCount}):\n${content}`,
       }
     } catch {
       return undefined
     }
   }
+}
+
+/** Emits deterministic advice after consecutive Tool Steps make no durable file change. */
+export class NoProgressLoopGuard implements LoopGuard {
+  private readonly thresholds: readonly number[]
+
+  constructor(options: { thresholds: readonly number[] }) {
+    this.thresholds = validateThresholds(options.thresholds)
+  }
+
+  async review(input: LoopGuardReviewInput): Promise<LoopGuardReminder | undefined> {
+    const stepsWithoutProgress = trailingStepsWithoutProgress(input.steps)
+    if (!this.thresholds.includes(stepsWithoutProgress)) return undefined
+    return {
+      kind: 'no-progress',
+      metric: stepsWithoutProgress,
+      summary: `${stepsWithoutProgress} steps without a file change`,
+      content: [
+        `Loop Guard reminder (${stepsWithoutProgress} steps without a file change):`,
+        `You have completed ${stepsWithoutProgress} consecutive Tool Steps without a successful file change.`,
+        'Re-evaluate the current task before doing more inspection.',
+        '- If the user asked only for analysis, continue investigating or provide the answer.',
+        '- If the user asked for implementation and the evidence is sufficient, start modifying and validating the code.',
+        '- If necessary evidence is still missing, use the next inspection to resolve one specific missing fact.',
+        'This is advisory and does not require a file change.',
+      ].join('\n'),
+    }
+  }
+}
+
+/** Counts trailing Tool Steps with no successful mutating Tool Call. */
+export function trailingStepsWithoutProgress(steps: readonly LoopGuardStep[]): number {
+  let count = 0
+  for (let index = steps.length - 1; index >= 0; index -= 1) {
+    const step = steps[index]
+    if (step === undefined) break
+    if (step.calls.some(call => !call.failed && call.effect === 'mutate')) break
+    count += 1
+  }
+  return count
 }
 
 /** Returns the exact-repeat length of the final call chain. */

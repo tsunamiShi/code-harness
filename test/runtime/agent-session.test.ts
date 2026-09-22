@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { AgentSession, runAgent, type AgentEvent } from '../../src/runtime/agent-session.ts'
-import type { LoopGuard } from '../../src/runtime/loop-guard.ts'
+import { NoProgressLoopGuard, type LoopGuard } from '../../src/runtime/loop-guard.ts'
 import type { SessionRecord, SessionStore } from '../../src/runtime/session-store.ts'
 import { MemorySessionStore } from '../../src/storage/memory-session-store.ts'
 import type { Message, Model, ModelOutput, Tool } from '../../src/runtime/types.ts'
@@ -23,6 +23,7 @@ test('feeds a tool result back to the model before returning the final answer', 
     },
   }
   const search: Tool = {
+    effect: 'observe',
     description: {
       name: 'search',
       description: 'Search the web.',
@@ -67,6 +68,7 @@ test('emits an observable execution chain with provider reasoning and tool conte
     },
   }
   const read: Tool = {
+    effect: 'observe',
     parallelSafe: true,
     description: { name: 'Read', description: 'Read.', parameters: {} },
     async execute() {
@@ -125,6 +127,7 @@ test('does not impose a Step limit and applies maxTokens to every model invocati
     },
   }
   const search: Tool = {
+    effect: 'observe',
     description: {
       name: 'search',
       description: 'Search the web.',
@@ -189,16 +192,18 @@ test('injects advisory Loop Guard content after repeated identical Tool Calls', 
     },
   }
   const loopGuard: LoopGuard = {
-    thresholds: [3],
     async review(input) {
+      if (input.steps.length !== 3) return undefined
       return {
-        toolName: input.call.name,
-        repeatCount: input.repeatCount,
+        kind: 'exact-repeat',
+        metric: 3,
+        summary: 'Bash × 3',
         content: 'Loop Guard reminder: inspect the previous result and change approach.',
       }
     },
   }
   const bash: Tool = {
+    effect: 'execute',
     description: { name: 'Bash', description: 'Run.', parameters: {} },
     async execute() {
       toolExecutions += 1
@@ -206,7 +211,7 @@ test('injects advisory Loop Guard content after repeated identical Tool Calls', 
     },
   }
 
-  const session = await AgentSession.create({ model, tools: [bash], store, loopGuard })
+  const session = await AgentSession.create({ model, tools: [bash], store, loopGuards: [loopGuard] })
   assert.equal(await session.send('Inspect rendered HTML.'), 'Finished after the reminder.')
 
   assert.equal(toolExecutions, 3)
@@ -226,6 +231,7 @@ test('reviews a persisted exact-repeat chain before resuming an interrupted Turn
   const store = new MemorySessionStore()
   let request = 0
   const tool: Tool = {
+    effect: 'execute',
     description: { name: 'Bash', description: 'Run.', parameters: {} },
     async execute() {
       return 'probe result'
@@ -260,22 +266,61 @@ test('reviews a persisted exact-repeat chain before resuming an interrupted Turn
     },
     tools: [tool],
     store,
-    loopGuard: {
-      thresholds: [3],
+    loopGuards: [{
       async review(input) {
+        if (input.steps.length !== 3) return undefined
         reviews += 1
         return {
-          toolName: input.call.name,
-          repeatCount: input.repeatCount,
+          kind: 'exact-repeat',
+          metric: 3,
+          summary: 'Bash × 3',
           content: 'Loop Guard reminder: use the existing evidence.',
         }
       },
-    },
+    }],
   })
 
   assert.equal(await resumed.continueTurn(), 'Browser inspection is not currently available.')
   assert.equal(reviews, 1)
   assert.equal(resumedTools, 1)
+})
+
+test('injects deterministic advice after consecutive Steps make no file change', async () => {
+  let request = 0
+  const requests: Array<readonly Message[]> = []
+  const model: Model = {
+    async generate(input) {
+      request += 1
+      requests.push(structuredClone(input.messages))
+      if (request <= 2) {
+        return {
+          kind: 'tool-calls',
+          calls: [{ id: `read-${request}`, name: 'Read', arguments: { path: `/p/${request}.ts` } }],
+        }
+      }
+      return { kind: 'final', content: 'I will start implementation now.' }
+    },
+  }
+  const read: Tool = {
+    effect: 'observe',
+    description: { name: 'Read', description: 'Read.', parameters: {} },
+    async execute() {
+      return 'source'
+    },
+  }
+
+  const answer = await runAgent({
+    model,
+    tools: [read],
+    prompt: 'Implement the feature.',
+    loopGuards: [new NoProgressLoopGuard({ thresholds: [2] })],
+  })
+
+  assert.equal(answer, 'I will start implementation now.')
+  const reminder = requests[2]?.find(message =>
+    message.role === 'user' && message.content.includes('2 steps without a file change')
+  )
+  assert.equal(reminder?.role, 'user')
 })
 
 test('allows ten tool steps followed by a final answer', async () => {
@@ -293,6 +338,7 @@ test('allows ten tool steps followed by a final answer', async () => {
     },
   }
   const search: Tool = {
+    effect: 'observe',
     description: { name: 'search', description: 'Search.', parameters: {} },
     async execute() {
       return 'result'
@@ -337,6 +383,7 @@ test('executes a parallel-safe tool batch concurrently within one step', async (
     },
   }
   const read: Tool = {
+    effect: 'observe',
     parallelSafe: true,
     description: { name: 'Read', description: 'Read.', parameters: {} },
     async execute(arguments_) {
@@ -397,6 +444,7 @@ test('persists each parallel Tool result as soon as that call completes', async 
       },
     },
     tools: [{
+      effect: 'observe',
       parallelSafe: true,
       description: { name: 'Read', description: 'Read.', parameters: {} },
       async execute(arguments_) {
@@ -597,6 +645,7 @@ test('restores completed Steps from a failed Turn and continues after reconnecti
   const store = new MemorySessionStore()
   let request = 0
   const read: Tool = {
+    effect: 'observe',
     description: { name: 'Read', description: 'Read.', parameters: {} },
     async execute() {
       return 'persisted source'
@@ -695,6 +744,7 @@ test('does not replay an interrupted Tool call with unknown side effects', async
       },
     },
     tools: [{
+      effect: 'mutate',
       description: { name: 'Edit', description: 'Edit.', parameters: {} },
       async execute() {
         editExecutions += 1
@@ -729,6 +779,7 @@ test('returns a tool error to the model and restores it with the completed turn'
     },
   }
   const read: Tool = {
+    effect: 'observe',
     description: { name: 'Read', description: 'Read a file.', parameters: {} },
     async execute() {
       throw new Error('path denied')
@@ -783,6 +834,7 @@ test('continues Responses with only new function outputs and user input', async 
     },
   }
   const read: Tool = {
+    effect: 'observe',
     description: { name: 'Read', description: 'Read a file.', parameters: {} },
     async execute() {
       return 'source'

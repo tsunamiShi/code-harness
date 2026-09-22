@@ -59,8 +59,9 @@ export class MemorySessionStore implements SessionStore {
       turn.loopGuardReminders.push({
         reminderNumber: record.reminderNumber,
         afterStep: record.afterStep,
-        toolName: record.toolName,
-        repeatCount: record.repeatCount,
+        kind: record.kind,
+        metric: record.metric,
+        summary: record.summary,
         content: record.content,
       })
       return

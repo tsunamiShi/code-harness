@@ -49,4 +49,4 @@ A hard ceiling cannot distinguish a long task making progress from a short loop.
 - Reminders advise the main model but cannot guarantee that it changes course.
 - Near-duplicate calls with changed arguments are not detected.
 - Guard model invocations are not yet recorded as ordinary Model Invocations; only emitted reminders are durable.
-- The version-6 `agent_loop_guard_reviews` table remains as migration history, while new writes use `agent_loop_guard_reminders` from schema version 8.
+- ADR-023 later generalizes the reminder fields and removes the unused semantic-review table; this exact-repeat policy remains active inside the composed Loop Guard.

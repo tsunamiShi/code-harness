@@ -93,8 +93,8 @@ export class MysqlAgentStore implements SessionStore, ProjectStore {
       [sessionId],
     )
     const [loopGuardRows] = await this.pool.execute<LoopGuardReminderRow[]>(
-      `SELECT r.turn_id, r.reminder_number, r.after_step, r.tool_name,
-              r.repeat_count, r.content
+      `SELECT r.turn_id, r.reminder_number, r.after_step, r.reminder_kind,
+              r.metric, r.summary, r.content
        FROM agent_loop_guard_reminders AS r
        INNER JOIN agent_turns AS t ON t.id = r.turn_id
        WHERE t.session_id = ?
@@ -344,8 +344,9 @@ interface LoopGuardReminderRow extends RowDataPacket {
   turn_id: string
   reminder_number: number
   after_step: number
-  tool_name: string
-  repeat_count: number
+  reminder_kind: string
+  metric: number
+  summary: string
   content: string
 }
 
@@ -412,7 +413,7 @@ async function migrate(pool: Pool): Promise<void> {
     'SELECT MAX(version) AS version FROM agent_schema_migrations',
   )
   const version = rows[0]?.version ?? 0
-  if (version > 8) throw new Error(`Database schema version ${version} is newer than supported version 8`)
+  if (version > 9) throw new Error(`Database schema version ${version} is newer than supported version 9`)
 
   if (version < 1) {
     await pool.execute(`
@@ -667,6 +668,31 @@ async function migrate(pool: Pool): Promise<void> {
     `)
     await pool.execute('INSERT IGNORE INTO agent_schema_migrations (version) VALUES (8)')
   }
+
+  if (version < 9) {
+    await pool.execute('DROP TABLE IF EXISTS agent_loop_guard_reviews')
+    await pool.execute('DROP TABLE IF EXISTS agent_loop_guard_reminders')
+    await pool.execute(`
+      CREATE TABLE agent_loop_guard_reminders (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        turn_id VARCHAR(36) NOT NULL,
+        reminder_number INT UNSIGNED NOT NULL,
+        after_step INT UNSIGNED NOT NULL,
+        reminder_kind VARCHAR(32) NOT NULL,
+        metric INT UNSIGNED NOT NULL,
+        summary VARCHAR(255) NOT NULL,
+        content TEXT NOT NULL,
+        created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+        UNIQUE KEY uq_agent_loop_guard_reminders_turn_number (turn_id, reminder_number),
+        KEY idx_agent_loop_guard_reminders_turn_step (turn_id, after_step),
+        CONSTRAINT fk_agent_loop_guard_reminders_turn FOREIGN KEY (turn_id)
+          REFERENCES agent_turns (id) ON DELETE CASCADE,
+        CONSTRAINT chk_agent_loop_guard_reminders_kind
+          CHECK (reminder_kind IN ('exact-repeat', 'no-progress'))
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+    `)
+    await pool.execute('INSERT IGNORE INTO agent_schema_migrations (version) VALUES (9)')
+  }
 }
 
 async function lockSession(connection: PoolConnection, sessionId: string): Promise<void> {
@@ -816,14 +842,15 @@ async function applyRecord(
       await requireRunningTurn(connection, sessionId, record.turnId)
       await connection.execute(
         `INSERT INTO agent_loop_guard_reminders
-           (turn_id, reminder_number, after_step, tool_name, repeat_count, content)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+           (turn_id, reminder_number, after_step, reminder_kind, metric, summary, content)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
           record.turnId,
           record.reminderNumber,
           record.afterStep,
-          record.toolName,
-          record.repeatCount,
+          record.kind,
+          record.metric,
+          record.summary,
           record.content,
         ],
       )
@@ -974,10 +1001,16 @@ function toLoopGuardReminder(row: LoopGuardReminderRow): AgentLoopGuardReminder 
   return {
     reminderNumber: row.reminder_number,
     afterStep: row.after_step,
-    toolName: row.tool_name,
-    repeatCount: row.repeat_count,
+    kind: readLoopGuardReminderKind(row.reminder_kind),
+    metric: row.metric,
+    summary: row.summary,
     content: row.content,
   }
+}
+
+function readLoopGuardReminderKind(value: string): AgentLoopGuardReminder['kind'] {
+  if (value === 'exact-repeat' || value === 'no-progress') return value
+  throw new Error(`Unknown Loop Guard reminder kind: ${value}`)
 }
 
 function toStep(row: StepRow, executions: readonly AgentToolExecution[]): AgentStep {

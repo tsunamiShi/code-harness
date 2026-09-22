@@ -40,6 +40,7 @@ export function createLspTool(
     (_key, input) => new LanguageServerClient(input.root, input.languageServer),
   )
   return {
+    effect: 'observe',
     parallelSafe: false,
     description: {
       name: 'LSP',
