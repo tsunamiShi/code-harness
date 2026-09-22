@@ -7,7 +7,7 @@ import test from 'node:test'
 
 import mysql, { type RowDataPacket } from 'mysql2/promise'
 
-import { ProjectCatalog, projectInstructions } from '../../src/projects/project.ts'
+import { ProjectCatalog } from '../../src/projects/project.ts'
 import { AgentSession } from '../../src/runtime/agent-session.ts'
 import type { Message, Model, Tool } from '../../src/runtime/types.ts'
 import {
@@ -56,9 +56,24 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
         request += 1
         await input.onAttempt?.({ type: 'started', attempt: 1 })
         await input.onAttempt?.({
+          type: 'headers-received',
+          attempt: 1,
+          httpStatus: 200,
+          durationMs: 12,
+          providerRequestId: `provider-request-${request}`,
+        })
+        await input.onAttempt?.({
+          type: 'first-event',
+          attempt: 1,
+          eventType: 'response.created',
+          durationMs: 14,
+        })
+        await input.onAttempt?.({
           type: 'completed',
           attempt: 1,
           httpStatus: 200,
+          durationMs: 25,
+          eventCount: 8,
           providerRequestId: `provider-request-${request}`,
         })
         return request === 1
@@ -153,10 +168,18 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
     const [attemptRows] = await admin.query<(RowDataPacket & {
       attempt_number: number
       status: string
+      phase: string
       http_status: number
       provider_request_id: string
+      headers_latency_ms: number
+      first_event_latency_ms: number
+      first_event_type: string
+      duration_ms: number
+      event_count: number
     })[]>(
-      `SELECT a.attempt_number, a.status, a.http_status, a.provider_request_id
+      `SELECT a.attempt_number, a.status, a.phase, a.http_status, a.provider_request_id,
+              a.headers_latency_ms, a.first_event_latency_ms, a.first_event_type,
+              a.duration_ms, a.event_count
        FROM \`${database}\`.agent_model_attempts AS a
        INNER JOIN \`${database}\`.agent_model_invocations AS i ON i.id = a.invocation_id
        WHERE i.turn_id = ? ORDER BY i.step_number, a.attempt_number`,
@@ -166,16 +189,81 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
       {
         attempt_number: 1,
         status: 'completed',
+        phase: 'completed',
         http_status: 200,
         provider_request_id: 'provider-request-1',
+        headers_latency_ms: 12,
+        first_event_latency_ms: 14,
+        first_event_type: 'response.created',
+        duration_ms: 25,
+        event_count: 8,
       },
       {
         attempt_number: 1,
         status: 'completed',
+        phase: 'completed',
         http_status: 200,
         provider_request_id: 'provider-request-2',
+        headers_latency_ms: 12,
+        first_event_latency_ms: 14,
+        first_event_type: 'response.created',
+        duration_ms: 25,
+        event_count: 8,
       },
     ])
+
+    const failedTransport = await AgentSession.create({
+      model: {
+        async generate(input) {
+          await input.onAttempt?.({ type: 'started', attempt: 1 })
+          await input.onAttempt?.({
+            type: 'failed',
+            attempt: 1,
+            phase: 'requesting',
+            durationMs: 300_000,
+            eventCount: 0,
+            errorName: 'TypeError',
+            errorMessage: 'fetch failed',
+            causeName: 'HeadersTimeoutError',
+            causeCode: 'UND_ERR_HEADERS_TIMEOUT',
+            causeMessage: 'Headers Timeout Error',
+          })
+          throw new Error('provider unavailable')
+        },
+      },
+      tools: [],
+      store,
+      project: updatedProject,
+    })
+    await assert.rejects(failedTransport.send('capture transport failure'), /provider unavailable/)
+    const failedSnapshot = await store.loadSession(failedTransport.id)
+    const [failedAttemptRows] = await admin.query<(RowDataPacket & {
+      status: string
+      phase: string
+      failure_phase: string
+      duration_ms: number
+      event_count: number
+      error_cause_name: string
+      error_cause_code: string
+      error_cause_message: string
+    })[]>(
+      `SELECT a.status, a.phase, a.failure_phase, a.duration_ms, a.event_count,
+              a.error_cause_name, a.error_cause_code, a.error_cause_message
+       FROM \`${database}\`.agent_model_attempts AS a
+       INNER JOIN \`${database}\`.agent_model_invocations AS i ON i.id = a.invocation_id
+       WHERE i.turn_id = ?`,
+      [failedSnapshot?.turns[0]?.id],
+    )
+    assert.deepEqual(failedAttemptRows.map(row => ({ ...row })), [{
+      status: 'failed',
+      phase: 'failed',
+      failure_phase: 'requesting',
+      duration_ms: 300_000,
+      event_count: 0,
+      error_cause_name: 'HeadersTimeoutError',
+      error_cause_code: 'UND_ERR_HEADERS_TIMEOUT',
+      error_cause_message: 'Headers Timeout Error',
+    }])
 
     await store.close()
     store = await MysqlAgentStore.connect(options)
@@ -199,7 +287,6 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
 
     assert.equal(restoredResponseId, 'response-2')
     assert.deepEqual(restoredMessages, [
-      { role: 'system', content: projectInstructions(restoredProject) },
       { role: 'user', content: '第二轮' },
     ])
 

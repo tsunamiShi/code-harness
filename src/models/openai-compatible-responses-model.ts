@@ -5,6 +5,7 @@ import type {
   FunctionTool,
   Response as ModelResponse,
   ResponseInputItem,
+  ResponseStreamEvent,
 } from 'openai/resources/responses/responses'
 
 import type {
@@ -26,8 +27,7 @@ export interface OpenAICompatibleResponsesModelOptions {
 }
 
 interface AttemptContext {
-  nextAttempt: number
-  onAttempt?: (event: ModelAttemptEvent) => Promise<void>
+  attempts: ProviderAttemptStateMachine
 }
 
 /** OpenAI-compatible Responses API adapter for the Runtime's Model interface. */
@@ -63,24 +63,51 @@ export class OpenAICompatibleResponsesModel implements Model {
     previousResponseId?: string
     onAttempt?: (event: ModelAttemptEvent) => Promise<void>
   }): Promise<ModelOutput> {
-    const { data: response, request_id: requestId } = await this.attemptContext.run(
-      { nextAttempt: 0, ...(input.onAttempt === undefined ? {} : { onAttempt: input.onAttempt }) },
-      async () => await this.client.responses.create({
-        model: this.options.model,
-        input: input.messages.flatMap(toProviderInput),
-        ...(input.previousResponseId === undefined
-          ? {}
-          : { previous_response_id: input.previousResponseId }),
-        ...(input.maxTokens === undefined ? {} : { max_output_tokens: input.maxTokens }),
-        ...(input.tools.length === 0
-          ? {}
-          : {
-              tools: input.tools.map(toProviderTool),
-              parallel_tool_calls: true,
-            }),
-      }).withResponse(),
-    )
+    const attempts = new ProviderAttemptStateMachine(input.onAttempt)
+    let response: ModelResponse
+    try {
+      response = await this.attemptContext.run(
+        { attempts },
+        async () => {
+          const stream = await this.client.responses.create({
+            model: this.options.model,
+            input: input.messages.flatMap(toProviderInput),
+            stream: true,
+            ...(input.previousResponseId === undefined
+              ? {}
+              : { previous_response_id: input.previousResponseId }),
+            ...(input.maxTokens === undefined ? {} : { max_output_tokens: input.maxTokens }),
+            ...(input.tools.length === 0
+              ? {}
+              : {
+                  tools: input.tools.map(toProviderTool),
+                  parallel_tool_calls: true,
+                }),
+          })
+          let terminalResponse: ModelResponse | undefined
+          for await (const event of stream) {
+            await attempts.receiveEvent(event)
+            if (
+              event.type === 'response.completed'
+              || event.type === 'response.incomplete'
+              || event.type === 'response.failed'
+            ) {
+              terminalResponse = event.response
+            }
+          }
+          if (terminalResponse === undefined) {
+            throw new Error('Model provider ended the SSE stream without a terminal response event')
+          }
+          await attempts.complete()
+          return terminalResponse
+        },
+      )
+    } catch (error: unknown) {
+      await attempts.failCurrent(error)
+      throw error
+    }
 
+    const requestId = attempts.completedProviderRequestId
     if (response.error !== null && response.error !== undefined) {
       throw new Error(`Model provider failed the response: ${response.error.message}`)
     }
@@ -100,7 +127,7 @@ export class OpenAICompatibleResponsesModel implements Model {
     const usage = readUsage(response)
     const metadata = {
       providerResponseId: response.id,
-      ...(requestId === null ? {} : { providerRequestId: requestId }),
+      ...(requestId === undefined ? {} : { providerRequestId: requestId }),
       ...(response.status === undefined ? {} : { finishReason: response.status }),
       ...(usage === undefined ? {} : { usage }),
     }
@@ -138,45 +165,159 @@ export class OpenAICompatibleResponsesModel implements Model {
     input: string | URL | Request,
     init?: RequestInit,
   ): Promise<Response> {
-    const context = this.attemptContext.getStore()
-    if (!context?.onAttempt) return await fetch_(input, init)
+    const attempts = this.attemptContext.getStore()?.attempts
+    if (!attempts) return await fetch_(input, init)
 
-    const attempt = context.nextAttempt + 1
-    context.nextAttempt = attempt
-    await context.onAttempt({ type: 'started', attempt })
-
+    await attempts.start()
     let response: Response
     try {
       response = await fetch_(input, init)
     } catch (error: unknown) {
-      await context.onAttempt({
-        type: 'failed',
-        attempt,
-        errorName: errorName(error),
-        errorMessage: errorMessage(error),
-      })
+      await attempts.failCurrent(error)
       throw error
     }
 
     const requestId = response.headers.get('x-request-id') ?? undefined
-    if (response.ok) {
-      await context.onAttempt({
-        type: 'completed',
-        attempt,
-        httpStatus: response.status,
-        ...(requestId === undefined ? {} : { providerRequestId: requestId }),
-      })
-    } else {
-      await context.onAttempt({
-        type: 'failed',
-        attempt,
-        errorName: 'HTTPError',
-        errorMessage: `HTTP ${response.status}${response.statusText.length === 0 ? '' : ` ${response.statusText}`}`,
-        httpStatus: response.status,
-        ...(requestId === undefined ? {} : { providerRequestId: requestId }),
-      })
+    await attempts.receiveHeaders(response.status, requestId)
+    if (!response.ok) {
+      await attempts.failCurrent(
+        new Error(`HTTP ${response.status}${response.statusText.length === 0 ? '' : ` ${response.statusText}`}`),
+        'HTTPError',
+      )
     }
     return response
+  }
+}
+
+interface ActiveAttempt {
+  attempt: number
+  phase: 'requesting' | 'headers-received' | 'streaming'
+  startedAt: number
+  httpStatus?: number
+  providerRequestId?: string
+  eventCount: number
+}
+
+/** Enforces one forward-only transport lifecycle for each SDK retry attempt. */
+class ProviderAttemptStateMachine {
+  private nextAttempt = 0
+  private active: ActiveAttempt | undefined
+  completedProviderRequestId: string | undefined
+
+  constructor(
+    private readonly onEvent?: (event: ModelAttemptEvent) => Promise<void>,
+    private readonly now: () => number = () => performance.now(),
+  ) {}
+
+  async start(): Promise<void> {
+    if (this.active !== undefined) {
+      throw new Error(`Provider Attempt ${this.active.attempt} is still ${this.active.phase}`)
+    }
+    const attempt = this.nextAttempt + 1
+    this.nextAttempt = attempt
+    this.active = {
+      attempt,
+      phase: 'requesting',
+      startedAt: this.now(),
+      eventCount: 0,
+    }
+    await this.emit({ type: 'started', attempt })
+  }
+
+  async receiveHeaders(httpStatus: number, providerRequestId?: string): Promise<void> {
+    const active = this.requireActive('requesting')
+    active.phase = 'headers-received'
+    active.httpStatus = httpStatus
+    if (providerRequestId !== undefined) active.providerRequestId = providerRequestId
+    await this.emit({
+      type: 'headers-received',
+      attempt: active.attempt,
+      httpStatus,
+      durationMs: this.duration(active),
+      ...(providerRequestId === undefined ? {} : { providerRequestId }),
+    })
+  }
+
+  async receiveEvent(event: ResponseStreamEvent): Promise<void> {
+    const active = this.requireActive('headers-received', 'streaming')
+    active.eventCount += 1
+    if (active.phase === 'streaming') return
+    active.phase = 'streaming'
+    await this.emit({
+      type: 'first-event',
+      attempt: active.attempt,
+      eventType: event.type,
+      durationMs: this.duration(active),
+    })
+  }
+
+  async complete(): Promise<void> {
+    const active = this.requireActive('streaming')
+    const event: ModelAttemptEvent = {
+      type: 'completed',
+      attempt: active.attempt,
+      httpStatus: active.httpStatus ?? 200,
+      durationMs: this.duration(active),
+      eventCount: active.eventCount,
+      ...(active.providerRequestId === undefined
+        ? {}
+        : { providerRequestId: active.providerRequestId }),
+    }
+    await this.emit(event)
+    this.completedProviderRequestId = active.providerRequestId
+    this.active = undefined
+  }
+
+  async failCurrent(error: unknown, explicitName?: string): Promise<void> {
+    const active = this.active
+    if (active === undefined) return
+    const cause = errorCause(error)
+    await this.emit({
+      type: 'failed',
+      attempt: active.attempt,
+      phase: active.phase,
+      durationMs: this.duration(active),
+      eventCount: active.eventCount,
+      errorName: explicitName ?? errorName(error),
+      errorMessage: errorMessage(error),
+      ...(active.httpStatus === undefined ? {} : { httpStatus: active.httpStatus }),
+      ...(active.providerRequestId === undefined
+        ? {}
+        : { providerRequestId: active.providerRequestId }),
+      ...(cause.name === undefined ? {} : { causeName: cause.name }),
+      ...(cause.code === undefined ? {} : { causeCode: cause.code }),
+      ...(cause.message === undefined ? {} : { causeMessage: cause.message }),
+    })
+    this.active = undefined
+  }
+
+  private requireActive(...phases: ActiveAttempt['phase'][]): ActiveAttempt {
+    const active = this.active
+    if (active === undefined || !phases.includes(active.phase)) {
+      const actual = active?.phase ?? 'none'
+      throw new Error(`Invalid Provider Attempt transition from ${actual} to ${phases.join(' or ')}`)
+    }
+    return active
+  }
+
+  private duration(active: ActiveAttempt): number {
+    return Math.max(0, Math.round(this.now() - active.startedAt))
+  }
+
+  private async emit(event: ModelAttemptEvent): Promise<void> {
+    await this.onEvent?.(event)
+  }
+}
+
+function errorCause(error: unknown): { name?: string; code?: string; message?: string } {
+  if (!(error instanceof Error) || !('cause' in error)) return {}
+  const cause = error.cause
+  if (typeof cause !== 'object' || cause === null) return {}
+  const record = cause as Record<string, unknown>
+  return {
+    ...(typeof record.name === 'string' ? { name: record.name } : {}),
+    ...(typeof record.code === 'string' ? { code: record.code } : {}),
+    ...(typeof record.message === 'string' ? { message: record.message } : {}),
   }
 }
 

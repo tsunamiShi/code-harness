@@ -40,7 +40,7 @@ test('uses the Responses endpoint and maps incremental function inputs and outpu
     fetch: async (input, init) => {
       requestURL = String(input)
       requestBody = JSON.parse(String(init?.body))
-      return jsonResponse({
+      return sseResponse({
         id: 'response-2',
         status: 'completed',
         output: [{
@@ -81,6 +81,7 @@ test('uses the Responses endpoint and maps incremental function inputs and outpu
       strict: false,
     }],
     parallel_tool_calls: true,
+    stream: true,
   })
   assert.deepEqual(output, {
     kind: 'tool-calls',
@@ -113,7 +114,7 @@ test('reports every provider attempt and completed response metadata', async () 
           },
         })
       }
-      return jsonResponse({
+      return sseResponse({
         id: 'response-1',
         status: 'completed',
         output: [
@@ -152,24 +153,40 @@ test('reports every provider attempt and completed response metadata', async () 
   })
 
   assert.equal(requests, 2)
-  assert.deepEqual(events, [
-    { type: 'started', attempt: 1 },
-    {
-      type: 'failed',
-      attempt: 1,
-      errorName: 'HTTPError',
-      errorMessage: 'HTTP 500 Internal Server Error',
-      httpStatus: 500,
-      providerRequestId: 'request-failed',
-    },
-    { type: 'started', attempt: 2 },
-    {
-      type: 'completed',
-      attempt: 2,
-      httpStatus: 200,
-      providerRequestId: 'request-completed',
-    },
+  assert.deepEqual(events.map(event => event.type), [
+    'started',
+    'headers-received',
+    'failed',
+    'started',
+    'headers-received',
+    'first-event',
+    'completed',
   ])
+  assert.deepEqual(events[1], {
+    type: 'headers-received',
+    attempt: 1,
+    httpStatus: 500,
+    durationMs: events[1]?.type === 'headers-received' ? events[1].durationMs : -1,
+    providerRequestId: 'request-failed',
+  })
+  assert.deepEqual(events[2], {
+    type: 'failed',
+    attempt: 1,
+    phase: 'headers-received',
+    durationMs: events[2]?.type === 'failed' ? events[2].durationMs : -1,
+    eventCount: 0,
+    errorName: 'HTTPError',
+    errorMessage: 'HTTP 500 Internal Server Error',
+    httpStatus: 500,
+    providerRequestId: 'request-failed',
+  })
+  assert.deepEqual(events[5], {
+    type: 'first-event',
+    attempt: 2,
+    eventType: 'response.created',
+    durationMs: events[5]?.type === 'first-event' ? events[5].durationMs : -1,
+  })
+  assert.equal(events[6]?.type === 'completed' ? events[6].eventCount : undefined, 2)
   assert.deepEqual(output, {
     kind: 'final',
     content: 'done',
@@ -198,7 +215,7 @@ test('omits max_output_tokens when no output token limit is configured', async (
     maxRetries: 0,
     fetch: async (_input, init) => {
       requestBody = JSON.parse(String(init?.body))
-      return jsonResponse({
+      return sseResponse({
         id: 'response-with-provider-default',
         status: 'completed',
         output: [{
@@ -223,7 +240,7 @@ test('rejects a response truncated by the per-invocation output token limit', as
     baseURL: 'https://provider.example/compatible-mode/v1',
     model: 'test-model',
     maxRetries: 0,
-    fetch: async () => jsonResponse({
+    fetch: async () => sseResponse({
       id: 'response-truncated',
       status: 'incomplete',
       incomplete_details: { reason: 'max_output_tokens' },
@@ -242,20 +259,159 @@ test('rejects a response truncated by the per-invocation output token limit', as
   )
 })
 
-function jsonResponse(
+test('accepts DashScope reasoning deltas without a preceding content part event', async () => {
+  const created = responseBody({
+    id: 'response-dashscope-reasoning',
+    status: 'in_progress',
+    output: [],
+  })
+  const completed = responseBody({
+    id: 'response-dashscope-reasoning',
+    status: 'completed',
+    output: [{
+      type: 'function_call',
+      id: 'function-call-1',
+      call_id: 'call-1',
+      name: 'Read',
+      arguments: '{"path":"/project/file.ts"}',
+      status: 'completed',
+    }],
+  })
+  const reasoningItem = {
+    id: 'reasoning-1',
+    type: 'reasoning',
+    summary: [],
+    status: 'in_progress',
+  }
+  const model = new OpenAICompatibleResponsesModel({
+    apiKey: 'test-key',
+    baseURL: 'https://provider.example/compatible-mode/v1',
+    model: 'test-model',
+    maxRetries: 0,
+    fetch: async () => sseEvents([
+      { type: 'response.created', sequence_number: 0, response: created },
+      {
+        type: 'response.output_item.added',
+        sequence_number: 1,
+        output_index: 0,
+        item: reasoningItem,
+      },
+      {
+        type: 'response.reasoning_text.delta',
+        sequence_number: 2,
+        output_index: 0,
+        content_index: 0,
+        item_id: 'reasoning-1',
+        delta: 'inspect',
+      },
+      { type: 'response.completed', sequence_number: 3, response: completed },
+    ]),
+  })
+
+  const output = await model.generate({
+    messages: [{ role: 'user', content: 'inspect the file' }],
+    tools: [readTool],
+  })
+
+  assert.deepEqual(output, {
+    kind: 'tool-calls',
+    calls: [{ id: 'call-1', name: 'Read', arguments: { path: '/project/file.ts' } }],
+    metadata: {
+      providerResponseId: 'response-dashscope-reasoning',
+      finishReason: 'completed',
+    },
+  })
+})
+
+test('reports the underlying transport cause when an SSE request fails before headers', async () => {
+  const events: ModelAttemptEvent[] = []
+  const transportCause = Object.assign(new Error('Headers Timeout Error'), {
+    name: 'HeadersTimeoutError',
+    code: 'UND_ERR_HEADERS_TIMEOUT',
+  })
+  const model = new OpenAICompatibleResponsesModel({
+    apiKey: 'test-key',
+    baseURL: 'https://provider.example/compatible-mode/v1',
+    model: 'test-model',
+    maxRetries: 0,
+    fetch: async () => {
+      throw new TypeError('fetch failed', { cause: transportCause })
+    },
+  })
+
+  await assert.rejects(
+    model.generate({
+      messages: [{ role: 'user', content: 'hello' }],
+      tools: [],
+      onAttempt: async event => {
+        events.push(structuredClone(event))
+      },
+    }),
+    /Request timed out/,
+  )
+
+  assert.equal(events.length, 2)
+  assert.deepEqual(events[0], { type: 'started', attempt: 1 })
+  assert.deepEqual(events[1], {
+    type: 'failed',
+    attempt: 1,
+    phase: 'requesting',
+    durationMs: events[1]?.type === 'failed' ? events[1].durationMs : -1,
+    eventCount: 0,
+    errorName: 'TypeError',
+    errorMessage: 'fetch failed',
+    causeName: 'HeadersTimeoutError',
+    causeCode: 'UND_ERR_HEADERS_TIMEOUT',
+    causeMessage: 'Headers Timeout Error',
+  })
+})
+
+function sseResponse(
   body: Record<string, unknown>,
   headers: Record<string, string> = {},
 ): Response {
-  return new Response(JSON.stringify({
+  const completed = responseBody(body)
+  const created = responseBody({
+    ...body,
+    status: 'in_progress',
+    output: [],
+    output_text: '',
+    usage: null,
+  })
+  return sseEvents([
+    { type: 'response.created', sequence_number: 0, response: created },
+    { type: 'response.completed', sequence_number: 1, response: completed },
+  ], headers)
+}
+
+function sseEvents(
+  events: readonly Record<string, unknown>[],
+  headers: Record<string, string> = {},
+): Response {
+  return new Response([
+    ...events.flatMap(event => [
+      `event: ${String(event.type)}`,
+      `data: ${JSON.stringify(event)}`,
+      '',
+    ]),
+    'data: [DONE]',
+    '',
+  ].join('\n'), {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream', ...headers },
+  })
+}
+
+function responseBody(body: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: 'response-default',
     object: 'response',
     created_at: 1,
     model: 'test-model',
     error: null,
     incomplete_details: null,
     usage: null,
+    output: [],
     ...body,
-  }), {
-    status: 200,
-    headers: { 'content-type': 'application/json', ...headers },
-  })
+  }
 }

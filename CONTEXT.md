@@ -129,15 +129,19 @@ _Avoid_: Provider Attempt、Step
 _Avoid_: Turn Budget、Context Window
 
 **Provider Attempt**:
-Model Invocation 为获得响应而向模型供应商发起的一次实际请求；重试是同一 Model Invocation 下的新 Provider Attempt。
+Model Invocation 为获得响应而向模型供应商发起的一次实际请求；重试是同一 Model Invocation 下的新 Provider Attempt。每次 Attempt 只沿 `requesting -> headers-received -> streaming -> completed` 前进，并可从任一未完成阶段进入 `failed`。
 _Avoid_: Model Invocation、Step
+
+**First Event Latency**:
+从 Provider Attempt 开始到 SDK 解码出第一个 SSE Event 的耗时。它包含 Response Headers Latency；用于区分请求尚未收到响应、已经收到响应但首个事件迟到，以及首个事件之后的流式传输耗时。
+_Avoid_: First Token Latency、Total Model Latency
 
 **Agent Event**:
 Runtime 在执行过程中同步发出的只读观察记录，用于 CLI 时间线、日志或未来 UI；不会成为 Message，也不改变 Agent 决策。
 _Avoid_: Message、Session Record
 
 **Execution Trace**:
-一个 Turn 的 Agent Events 按发生顺序形成的可观察执行链路，包括 Model Invocation、Provider Attempt、模型输出、Tool Call、Tool Result、耗时和最终状态。
+一个 Turn 的 Agent Events 按发生顺序形成的可观察执行链路，包括 Model Invocation、Provider Attempt 的响应头与首个 SSE Event 里程碑、模型输出、Tool Call、Tool Result、耗时和最终状态。
 _Avoid_: Message History、Model Context
 
 **Trace Mode**:

@@ -29,7 +29,7 @@ src/
 └─ cli/       命令入口、参数解析、环境配置和终端输出
 ```
 
-`models/openai-compatible-responses-model.ts` 按协议而不是模型品牌命名。它通过 OpenAI-compatible Responses API 连接当前 `.env` 配置的主模型，因此可以使用百炼提供的兼容模型，而不需要为每个模型复制一个 Adapter。第一次请求发送 Project System Message 和用户输入；Runtime 持久化每个完成 Step 的 Provider Response ID，后续请求通过 `previous_response_id` 只发送新增的用户输入或 `function_call_output`，不重复发送 System Message，也不重放完整历史。Loop Guard 单独使用 `openai-compatible-chat-text-model.ts`，因为 `ZHIPU/GLM-5.3-Flash` 当前走 Chat Completions，并且 Guard 不需要 Tool Calling。
+`models/openai-compatible-responses-model.ts` 按协议而不是模型品牌命名。它通过 OpenAI-compatible Responses API 连接当前 `.env` 配置的主模型，因此可以使用百炼提供的兼容模型，而不需要为每个模型复制一个 Adapter。Adapter 使用 SDK 的原始 SSE 解码流，并从终止事件读取完整 Response，对 Runtime 仍返回一次完整模型决策；这避免让供应商的中间 reasoning 事件顺序受 SDK Response 累积器的额外约束。第一次请求发送 Project System Message 和用户输入；Runtime 持久化每个完成 Step 的 Provider Response ID，后续请求通过 `previous_response_id` 只发送新增的用户输入或 `function_call_output`，不重复发送 System Message，也不重放完整历史。Loop Guard 单独使用 `openai-compatible-chat-text-model.ts`，因为 `ZHIPU/GLM-5.3-Flash` 当前走 Chat Completions，并且 Guard 不需要 Tool Calling。
 
 ## Filesystem Tools
 
@@ -129,9 +129,9 @@ CLI 会显示 Primary Root 和新 Session ID。正常退出后可以恢复：
 pnpm chat -- --session <session-id>
 ```
 
-每个 Turn 会打印结构化 Execution Trace：Step 编号、模型请求中的 Message/Tool 数量、模型耗时、供应商返回的 Reasoning Content、Tool 执行、最终 Content 和 Turn 总耗时。交互式终端底部还会每秒刷新截至当前的 Turn 耗时；新 Trace 输出会先清除该临时行再重新显示，完成或失败后则以 Runtime 给出的总耗时为准。非交互输出不会持续刷新，避免污染重定向日志。默认 `AGENT_TRACE=compact`，同一批成功的 `Read / Glob / Grep / LSP` 会折叠成单行数量、类型、少量目标和最慢耗时；失败会自动展开，`Edit / Write / Bash` 始终显示参数和有界结果预览。使用 `AGENT_TRACE=verbose` 可恢复每个 Tool Call 的逐项参数、调度方式和结果预览。Trace Mode 只改变终端展示，不改变数据库记录或发给模型的 Tool Result。
+每个 Turn 会打印结构化 Execution Trace：Step 编号、模型请求中的 Message/Tool 数量、每个 Provider Attempt 的 Response Headers 和首个 SSE Event 耗时、模型总耗时、供应商返回的 Reasoning Content、Tool 执行、最终 Content 和 Turn 总耗时。交互式终端底部还会每秒刷新截至当前的 Turn 耗时；新 Trace 输出会先清除该临时行再重新显示，完成或失败后则以 Runtime 给出的总耗时为准。非交互输出不会持续刷新，避免污染重定向日志。默认 `AGENT_TRACE=compact`，同一批成功的 `Read / Glob / Grep / LSP` 会折叠成单行数量、类型、少量目标和最慢耗时；失败会自动展开，`Edit / Write / Bash` 始终显示参数和有界结果预览。使用 `AGENT_TRACE=verbose` 可恢复每个 Tool Call 的逐项参数、调度方式和结果预览。Trace Mode 只改变终端展示，不改变数据库记录或发给模型的 Tool Result。
 
-Final Content 会把模型返回的 Markdown 渲染成适合当前终端宽度的标题、列表、强调、代码块、表格和链接预览；数据库仍保存原始 Markdown。展开的 Tool Result 默认最多保留开头和结尾共 800 个原始字符，中间标明省略数量；可用 `AGENT_TRACE_MAX_RESULT_CHARS` 调整。完整结果仍会写入数据库并反馈给模型。MySQL 还会持久化 Model Invocation 的输入规模、Token Usage、结束原因和错误，以及每次实际 Provider Attempt 的 HTTP 状态、Request ID、错误与时间。
+Final Content 会把模型返回的 Markdown 渲染成适合当前终端宽度的标题、列表、强调、代码块、表格和链接预览；数据库仍保存原始 Markdown。展开的 Tool Result 默认最多保留开头和结尾共 800 个原始字符，中间标明省略数量；可用 `AGENT_TRACE_MAX_RESULT_CHARS` 调整。完整结果仍会写入数据库并反馈给模型。MySQL 还会持久化 Model Invocation 的输入规模、Token Usage、结束原因和错误，以及每次实际 Provider Attempt 的状态阶段、响应头耗时、首个 SSE Event 耗时、事件数、HTTP 状态、Request ID、总耗时和底层错误原因。
 
 Reasoning Content 只来自供应商 Responses 输出中的 `reasoning` item（`summary` 或显式 `content`）。并非所有模型或每个响应都会返回这些内容；未返回时 CLI 会明确显示 `Provider reasoning: not returned`，不会把 Runtime 自己生成的说明伪装成模型思考。Reasoning Content 原文仍只存在于实时 Trace；数据库仅保留其字符数和供应商报告的 reasoning token 数。
 
@@ -144,7 +144,7 @@ Reasoning Content 只来自供应商 Responses 输出中的 `reasoning` item（`
 - `agent_steps`：每次成功模型决策及其最终输出或 Tool Call Batch。
 - `agent_tool_calls`：Step 内每个 Tool Call 的参数、状态、结果和错误。
 - `agent_model_invocations`：每个 Step 对应的逻辑模型调用，包括失败后未产生 Step 的调用。
-- `agent_model_attempts`：一次 Model Invocation 下每个实际供应商请求及 SDK 重试。
+- `agent_model_attempts`：一次 Model Invocation 下每个实际供应商请求及 SDK 重试，包括 `requesting / headers-received / streaming / completed / failed` 状态、首包指标和底层错误原因。
 - `agent_loop_guard_reminders`：精确重复或连续无文件修改命中阈值后生成的弱提醒。
 - `agent_schema_migrations`：已应用的数据库结构版本。
 
@@ -174,6 +174,7 @@ Reasoning Content 只来自供应商 Responses 输出中的 `reasoning` item（`
 - [ADR-022: Responses continue from durable Provider state](docs/decisions/022-responses-continue-from-durable-provider-state.md)
 - [ADR-023: No-progress Loop Guard uses Tool effects](docs/decisions/023-no-progress-loop-guard-uses-tool-effects.md)
 - [ADR-024: Responses continuation sends System instructions only once](docs/decisions/024-responses-continuation-sends-system-once.md)
+- [ADR-025: Responses stream and Provider Attempt milestones are durable](docs/decisions/025-stream-responses-and-persist-attempt-milestones.md)
 
 ## 当前限制
 

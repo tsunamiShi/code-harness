@@ -152,6 +152,74 @@ test('states when the provider returns no reasoning content', () => {
   assert.match(output.join('\n'), /Final content\n│    preview: done/)
 })
 
+test('renders provider headers, first SSE event, completion, and transport causes', () => {
+  const output: string[] = []
+  const trace = createConsoleTrace({ write: text => output.push(text), colors: false })
+
+  trace({
+    type: 'model.attempt',
+    turnId: 'turn',
+    step: 1,
+    event: { type: 'started', attempt: 1 },
+  })
+  trace({
+    type: 'model.attempt',
+    turnId: 'turn',
+    step: 1,
+    event: {
+      type: 'headers-received',
+      attempt: 1,
+      httpStatus: 200,
+      durationMs: 1_200,
+    },
+  })
+  trace({
+    type: 'model.attempt',
+    turnId: 'turn',
+    step: 1,
+    event: {
+      type: 'first-event',
+      attempt: 1,
+      eventType: 'response.created',
+      durationMs: 1_350,
+    },
+  })
+  trace({
+    type: 'model.attempt',
+    turnId: 'turn',
+    step: 1,
+    event: {
+      type: 'completed',
+      attempt: 1,
+      httpStatus: 200,
+      durationMs: 2_500,
+      eventCount: 12,
+    },
+  })
+  trace({
+    type: 'model.attempt',
+    turnId: 'turn',
+    step: 2,
+    event: {
+      type: 'failed',
+      attempt: 2,
+      phase: 'requesting',
+      durationMs: 300_000,
+      eventCount: 0,
+      errorName: 'TypeError',
+      errorMessage: 'fetch failed',
+      causeCode: 'UND_ERR_HEADERS_TIMEOUT',
+    },
+  })
+
+  const rendered = output.join('\n')
+  assert.match(rendered, /Provider attempt 1 started/)
+  assert.match(rendered, /Response headers HTTP 200 · 1\.20s/)
+  assert.match(rendered, /First SSE event response\.created · 1\.35s/)
+  assert.match(rendered, /SSE completed 12 events · 2\.50s/)
+  assert.match(rendered, /Provider attempt 2 failed requesting · 300\.00s · UND_ERR_HEADERS_TIMEOUT/)
+})
+
 test('renders Loop Guard reminders as execution-chain checkpoints', () => {
   const output: string[] = []
   const trace = createConsoleTrace({ write: text => output.push(text), colors: false })

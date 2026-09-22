@@ -52,21 +52,44 @@ export interface ModelDescriptor {
   maxRetries?: number
 }
 
+export type ModelAttemptPhase = 'requesting' | 'headers-received' | 'streaming'
+
 export type ModelAttemptEvent =
   | { type: 'started'; attempt: number }
+  | {
+      type: 'headers-received'
+      attempt: number
+      httpStatus: number
+      durationMs: number
+      providerRequestId?: string
+    }
+  | {
+      type: 'first-event'
+      attempt: number
+      eventType: string
+      durationMs: number
+    }
   | {
       type: 'completed'
       attempt: number
       httpStatus: number
+      durationMs: number
+      eventCount: number
       providerRequestId?: string
     }
   | {
       type: 'failed'
       attempt: number
+      phase: ModelAttemptPhase
+      durationMs: number
+      eventCount: number
       errorName: string
       errorMessage: string
       httpStatus?: number
       providerRequestId?: string
+      causeName?: string
+      causeCode?: string
+      causeMessage?: string
     }
 
 export interface Model {

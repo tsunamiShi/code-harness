@@ -252,8 +252,9 @@ export class MysqlAgentStore implements SessionStore, ProjectStore {
       await connection.execute(
         `UPDATE agent_model_attempts AS a
          INNER JOIN agent_model_invocations AS i ON i.id = a.invocation_id
-         SET a.status = 'failed', a.error_name = 'InterruptedExecution',
-             a.error_message = ?, a.completed_at = CURRENT_TIMESTAMP(6)
+         SET a.status = 'failed', a.failure_phase = a.phase, a.phase = 'failed',
+             a.error_name = 'InterruptedExecution', a.error_message = ?,
+             a.completed_at = CURRENT_TIMESTAMP(6)
          WHERE i.turn_id = ? AND a.status = 'running'`,
         [interruptedToolError, turnId],
       )
@@ -413,7 +414,7 @@ async function migrate(pool: Pool): Promise<void> {
     'SELECT MAX(version) AS version FROM agent_schema_migrations',
   )
   const version = rows[0]?.version ?? 0
-  if (version > 9) throw new Error(`Database schema version ${version} is newer than supported version 9`)
+  if (version > 10) throw new Error(`Database schema version ${version} is newer than supported version 10`)
 
   if (version < 1) {
     await pool.execute(`
@@ -693,6 +694,43 @@ async function migrate(pool: Pool): Promise<void> {
     `)
     await pool.execute('INSERT IGNORE INTO agent_schema_migrations (version) VALUES (9)')
   }
+
+  if (version < 10) {
+    await pool.execute(`
+      ALTER TABLE agent_model_attempts
+        ADD COLUMN phase VARCHAR(32) NOT NULL DEFAULT 'requesting' AFTER status,
+        ADD COLUMN headers_received_at DATETIME(6) NULL AFTER provider_request_id,
+        ADD COLUMN first_event_at DATETIME(6) NULL AFTER headers_received_at,
+        ADD COLUMN first_event_type VARCHAR(128) NULL AFTER first_event_at,
+        ADD COLUMN headers_latency_ms BIGINT UNSIGNED NULL AFTER first_event_type,
+        ADD COLUMN first_event_latency_ms BIGINT UNSIGNED NULL AFTER headers_latency_ms,
+        ADD COLUMN duration_ms BIGINT UNSIGNED NULL AFTER first_event_latency_ms,
+        ADD COLUMN event_count INT UNSIGNED NOT NULL DEFAULT 0 AFTER duration_ms,
+        ADD COLUMN failure_phase VARCHAR(32) NULL AFTER event_count,
+        ADD COLUMN error_cause_name VARCHAR(255) NULL AFTER error_message,
+        ADD COLUMN error_cause_code VARCHAR(255) NULL AFTER error_cause_name,
+        ADD COLUMN error_cause_message TEXT NULL AFTER error_cause_code
+    `)
+    await pool.execute(`
+      UPDATE agent_model_attempts
+      SET phase = CASE status
+        WHEN 'completed' THEN 'completed'
+        WHEN 'failed' THEN 'failed'
+        ELSE 'requesting'
+      END
+    `)
+    await pool.execute(`
+      ALTER TABLE agent_model_attempts
+        ADD CONSTRAINT chk_agent_model_attempts_phase CHECK (
+          phase IN ('requesting', 'headers-received', 'streaming', 'completed', 'failed')
+        ),
+        ADD CONSTRAINT chk_agent_model_attempts_failure_phase CHECK (
+          failure_phase IS NULL
+          OR failure_phase IN ('requesting', 'headers-received', 'streaming')
+        )
+    `)
+    await pool.execute('INSERT IGNORE INTO agent_schema_migrations (version) VALUES (10)')
+  }
 }
 
 async function lockSession(connection: PoolConnection, sessionId: string): Promise<void> {
@@ -774,29 +812,91 @@ async function applyRecord(
       if (record.event.type === 'started') {
         await connection.execute(
           `INSERT INTO agent_model_attempts
-             (invocation_id, attempt_number, status)
-           VALUES (?, ?, 'running')`,
+             (invocation_id, attempt_number, status, phase)
+           VALUES (?, ?, 'running', 'requesting')`,
           [invocationId, record.event.attempt],
         )
         return
       }
-      const status = record.event.type === 'completed' ? 'completed' : 'failed'
+      if (record.event.type === 'headers-received') {
+        const [result] = await connection.execute<ResultSetHeader>(
+          `UPDATE agent_model_attempts
+           SET phase = 'headers-received', http_status = ?, provider_request_id = ?,
+               headers_latency_ms = ?, headers_received_at = CURRENT_TIMESTAMP(6)
+           WHERE invocation_id = ? AND attempt_number = ?
+             AND status = 'running' AND phase = 'requesting'`,
+          [
+            record.event.httpStatus,
+            record.event.providerRequestId ?? null,
+            record.event.durationMs,
+            invocationId,
+            record.event.attempt,
+          ],
+        )
+        requireChanged(result, `Cannot record headers for model attempt ${record.event.attempt}`)
+        return
+      }
+      if (record.event.type === 'first-event') {
+        const [result] = await connection.execute<ResultSetHeader>(
+          `UPDATE agent_model_attempts
+           SET phase = 'streaming', first_event_type = ?, first_event_latency_ms = ?,
+               first_event_at = CURRENT_TIMESTAMP(6), event_count = 1
+           WHERE invocation_id = ? AND attempt_number = ?
+             AND status = 'running' AND phase = 'headers-received'`,
+          [
+            record.event.eventType,
+            record.event.durationMs,
+            invocationId,
+            record.event.attempt,
+          ],
+        )
+        requireChanged(result, `Cannot record first event for model attempt ${record.event.attempt}`)
+        return
+      }
+      if (record.event.type === 'completed') {
+        const [result] = await connection.execute<ResultSetHeader>(
+          `UPDATE agent_model_attempts
+           SET status = 'completed', phase = 'completed', http_status = ?,
+               provider_request_id = ?, duration_ms = ?, event_count = ?,
+               completed_at = CURRENT_TIMESTAMP(6)
+           WHERE invocation_id = ? AND attempt_number = ?
+             AND status = 'running' AND phase = 'streaming'`,
+          [
+            record.event.httpStatus,
+            record.event.providerRequestId ?? null,
+            record.event.durationMs,
+            record.event.eventCount,
+            invocationId,
+            record.event.attempt,
+          ],
+        )
+        requireChanged(result, `Cannot complete model attempt ${record.event.attempt}`)
+        return
+      }
       const [result] = await connection.execute<ResultSetHeader>(
         `UPDATE agent_model_attempts
-         SET status = ?, http_status = ?, provider_request_id = ?,
-             error_name = ?, error_message = ?, completed_at = CURRENT_TIMESTAMP(6)
+         SET status = 'failed', phase = 'failed', failure_phase = ?,
+             http_status = ?, provider_request_id = ?, duration_ms = ?, event_count = ?,
+             error_name = ?, error_message = ?, error_cause_name = ?,
+             error_cause_code = ?, error_cause_message = ?,
+             completed_at = CURRENT_TIMESTAMP(6)
          WHERE invocation_id = ? AND attempt_number = ? AND status = 'running'`,
         [
-          status,
+          record.event.phase,
           record.event.httpStatus ?? null,
           record.event.providerRequestId ?? null,
-          record.event.type === 'failed' ? record.event.errorName : null,
-          record.event.type === 'failed' ? record.event.errorMessage : null,
+          record.event.durationMs,
+          record.event.eventCount,
+          record.event.errorName,
+          record.event.errorMessage,
+          record.event.causeName ?? null,
+          record.event.causeCode ?? null,
+          record.event.causeMessage ?? null,
           invocationId,
           record.event.attempt,
         ],
       )
-      requireChanged(result, `Cannot ${status} model attempt ${record.event.attempt}`)
+      requireChanged(result, `Cannot fail model attempt ${record.event.attempt}`)
       return
     }
     case 'model.invocation-completed': {

@@ -62,6 +62,36 @@ export function createConsoleTrace(options: ConsoleTraceOptions): (event: AgentE
           `\n${color.bold(`├─ Step ${event.step}`)} ${color.dim(`model request · ${event.messageCount} messages · ${event.toolCount} tools`)}`,
         )
         return
+      case 'model.attempt': {
+        const attempt = event.event
+        if (attempt.type === 'started') {
+          options.write(`│  ${color.yellow('→')} Provider attempt ${attempt.attempt} started`)
+          return
+        }
+        if (attempt.type === 'headers-received') {
+          options.write(
+            `│  ${color.green('✓')} Response headers ${color.dim(`HTTP ${attempt.httpStatus} · ${formatDuration(attempt.durationMs)}`)}`,
+          )
+          return
+        }
+        if (attempt.type === 'first-event') {
+          options.write(
+            `│  ${color.green('✓')} First SSE event ${color.dim(`${attempt.eventType} · ${formatDuration(attempt.durationMs)}`)}`,
+          )
+          return
+        }
+        if (attempt.type === 'completed') {
+          options.write(
+            `│  ${color.green('✓')} SSE completed ${color.dim(`${attempt.eventCount} events · ${formatDuration(attempt.durationMs)}`)}`,
+          )
+          return
+        }
+        const cause = attempt.causeCode ?? attempt.causeName
+        options.write(
+          `│  ${color.red('✗')} Provider attempt ${attempt.attempt} failed ${color.dim(`${attempt.phase} · ${formatDuration(attempt.durationMs)}${cause ? ` · ${cause}` : ''}`)}`,
+        )
+        return
+      }
       case 'model.completed':
         options.write(`│  ${color.green('✓')} Model responded ${color.dim(formatDuration(event.durationMs))}`)
         if (event.output.reasoningContent) {

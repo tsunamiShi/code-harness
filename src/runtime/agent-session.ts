@@ -10,7 +10,7 @@ import {
   type AgentTurn,
   type SessionStore,
 } from './session-store.ts'
-import type { Message, Model, ModelOutput, Tool, ToolCall } from './types.ts'
+import type { Message, Model, ModelAttemptEvent, ModelOutput, Tool, ToolCall } from './types.ts'
 import {
   type LoopGuard,
   type LoopGuardReminder,
@@ -52,6 +52,12 @@ export type AgentEvent =
       step: number
       durationMs: number
       output: ModelOutput
+    }
+  | {
+      type: 'model.attempt'
+      turnId: string
+      step: number
+      event: ModelAttemptEvent
     }
   | {
       type: 'loop-guard.reminded'
@@ -329,6 +335,7 @@ export class AgentSession {
               step,
               event,
             })
+            this.emit({ type: 'model.attempt', turnId, step, event })
           },
         })
       } catch (error: unknown) {

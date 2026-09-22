@@ -560,6 +560,9 @@ test('records a failed model invocation before failing the turn', async () => {
         await input.onAttempt?.({
           type: 'failed',
           attempt: 1,
+          phase: 'requesting',
+          durationMs: 30_000,
+          eventCount: 0,
           errorName: 'TimeoutError',
           errorMessage: 'Request timed out.',
         })
