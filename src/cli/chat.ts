@@ -4,13 +4,14 @@ import { createInterface } from 'node:readline/promises'
 import { OpenAICompatibleResponsesModel } from '../models/openai-compatible-responses-model.ts'
 import { OpenAICompatibleChatTextModel } from '../models/openai-compatible-chat-text-model.ts'
 import { primaryRoot, ProjectCatalog } from '../projects/project.ts'
-import { AgentSession } from '../runtime/agent-session.ts'
+import { AgentSession, type AgentEvent } from '../runtime/agent-session.ts'
 import { ModelRepeatLoopGuard, NoProgressLoopGuard } from '../runtime/loop-guard.ts'
 import { MysqlAgentStore } from '../storage/mysql-agent-store.ts'
 import { createCodeTools } from '../tools/code-tools.ts'
 import { readChatTarget } from './chat-arguments.ts'
 import { createConsoleTrace } from './console-trace.ts'
 import { createMarkdownRenderer } from './markdown.ts'
+import { createTraceModeShortcut } from './trace-mode-shortcut.ts'
 import { createTurnElapsedDisplay } from './turn-elapsed.ts'
 import {
   agentMaxTokensFromEnvironment,
@@ -72,17 +73,29 @@ const sessionOptions = {
   project,
   accessMode: target.accessMode,
   ...(maxTokens === undefined ? {} : { maxTokens }),
-  onEvent: (event: Parameters<typeof trace>[0]) => elapsedDisplay.handle(event, () => trace(event)),
+  onEvent: (event: AgentEvent) => elapsedDisplay.handle(event, () => trace.handle(event)),
 }
 const session = target.kind === 'session'
   ? await AgentSession.resume(target.id, sessionOptions)
   : await AgentSession.create(sessionOptions)
 const terminal = createInterface({ input: stdin, output: stdout })
+let waitingForPrompt = false
+const traceShortcut = createTraceModeShortcut({
+  enabled: stdin.isTTY === true,
+  input: stdin,
+  onToggle: () => {
+    const mode = trace.toggleMode()
+    elapsedDisplay.interject(() => console.log(`Trace mode: ${mode}`))
+    if (waitingForPrompt) terminal.prompt(true)
+  },
+})
 
 console.log(`Project: ${project.name}`)
 console.log(`Working directory: ${primaryRoot(project).path}`)
 console.log(`Filesystem access: ${target.accessMode}`)
-console.log(`Trace: ${traceMode} · Tool Result preview: ${traceMaxResultChars} chars`)
+console.log(
+  `Trace: ${traceMode} · Ctrl+O toggles compact/verbose · Tool Result preview: ${traceMaxResultChars} chars`,
+)
 console.log(
   `Loop Guard: exact repeats ${loopGuardThresholds.join('/')} via ${loopGuardModelName} · no progress ${noProgressThresholds.join('/')} steps`,
 )
@@ -100,7 +113,9 @@ if (session.hasRecoverableTurn()) {
 
 try {
   while (true) {
+    waitingForPrompt = true
     const prompt = (await terminal.question('\nYou> ')).trim()
+    waitingForPrompt = false
     if (prompt === '/exit') break
     if (prompt === '/retry') {
       try {
@@ -119,6 +134,8 @@ try {
     }
   }
 } finally {
+  waitingForPrompt = false
+  traceShortcut.close()
   elapsedDisplay.close()
   terminal.close()
   try {

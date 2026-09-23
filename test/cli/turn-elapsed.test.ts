@@ -76,6 +76,25 @@ test('does not schedule or render elapsed time outside a TTY', () => {
   assert.equal(scheduled, false)
 })
 
+test('temporarily clears and restores elapsed time around shortcut output', () => {
+  const output: string[] = []
+  const display = createTurnElapsedDisplay({
+    enabled: true,
+    write: text => output.push(text),
+    now: () => 2_000,
+    schedule: () => ({ cancel: () => undefined }),
+  })
+
+  display.handle(started, () => undefined)
+  display.interject(() => output.push('Trace mode: verbose'))
+
+  assert.deepEqual(output.slice(-3), [
+    '\r\u001B[2K',
+    'Trace mode: verbose',
+    '\r\u001B[2K⏱ Elapsed 00:00',
+  ])
+})
+
 test('clears and cancels an active display when the CLI closes', () => {
   const output: string[] = []
   let cancelled = false

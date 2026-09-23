@@ -145,7 +145,7 @@ _Avoid_: Message、Session Record
 _Avoid_: Message History、Model Context
 
 **Trace Mode**:
-CLI 对同一组 Agent Events 的展示密度。`compact` 折叠成功的只读感知工具，`verbose` 展示每个 Tool Call 的完整参数与结果；不改变持久化或模型上下文。
+CLI 对同一组 Agent Events 的展示密度。`compact` 合并供应商时序、折叠成功的只读感知工具、只显示 Bash command；`verbose` 按语义字段展示后续 Tool 参数与结果。交互式终端用 `Ctrl+O` 即时双向切换，不重放过去事件，也不改变持久化或模型上下文。
 _Avoid_: Log Level、Tool Policy
 
 **Reasoning Content**:

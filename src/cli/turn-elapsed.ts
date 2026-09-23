@@ -17,6 +17,7 @@ export interface TurnElapsedDisplayOptions {
 
 export interface TurnElapsedDisplay {
   handle: (event: AgentEvent, renderEvent: () => void) => void
+  interject: (renderOutput: () => void) => void
   close: () => void
 }
 
@@ -64,6 +65,15 @@ export function createTurnElapsedDisplay(options: TurnElapsedDisplayOptions): Tu
         stop()
         return
       }
+      render()
+    },
+    interject(renderOutput) {
+      if (!options.enabled) {
+        renderOutput()
+        return
+      }
+      clear()
+      renderOutput()
       render()
     },
     close() {

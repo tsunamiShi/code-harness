@@ -46,7 +46,7 @@ test('verbose mode renders model reasoning, tool arguments, result content, and 
     { type: 'turn.completed', turnId: '12345678-rest', steps: 1, durationMs: 1_300 },
   ]
 
-  for (const event of events) trace(event)
+  for (const event of events) trace.handle(event)
   const rendered = output.join('\n')
 
   assert.match(rendered, /Turn started 12345678/)
@@ -54,7 +54,8 @@ test('verbose mode renders model reasoning, tool arguments, result content, and 
   assert.match(rendered, /Provider reasoning\n│    Need source\./)
   assert.match(rendered, /Model content\n│    I will inspect the file\./)
   assert.match(rendered, /Read call-1/)
-  assert.match(rendered, /"path": "src\/app\.ts"/)
+  assert.match(rendered, /path: src\/app\.ts/)
+  assert.doesNotMatch(rendered, /[{}]/)
   assert.match(rendered, /12345\n│    … 2 characters omitted …\n│    890/)
   assert.match(rendered, /Turn completed 1 steps · 1\.30s/)
 })
@@ -72,16 +73,16 @@ test('compact mode folds successful inspection Tools into one summary', () => {
     content: `full source for ${path}`,
   })
 
-  trace({ type: 'tool.batch-started', turnId: 'turn', step: 1, mode: 'parallel', count: 2 })
-  trace({
+  trace.handle({ type: 'tool.batch-started', turnId: 'turn', step: 1, mode: 'parallel', count: 2 })
+  trace.handle({
     type: 'tool.started',
     turnId: 'turn',
     step: 1,
     call: { id: 'read-a', name: 'Read', arguments: { path: '/project/src/a.ts' } },
   })
-  trace(read('read-a', '/project/src/a.ts', 12))
-  trace(read('read-b', '/project/src/b.ts', 25))
-  trace({ type: 'step.started', turnId: 'turn', step: 2, messageCount: 5, toolCount: 7 })
+  trace.handle(read('read-a', '/project/src/a.ts', 12))
+  trace.handle(read('read-b', '/project/src/b.ts', 25))
+  trace.handle({ type: 'step.started', turnId: 'turn', step: 2, messageCount: 5, toolCount: 7 })
 
   const rendered = output.join('\n')
   assert.match(rendered, /Inspected 2 · Read ×2/)
@@ -92,11 +93,11 @@ test('compact mode folds successful inspection Tools into one summary', () => {
   assert.doesNotMatch(rendered, /tool batch/)
 })
 
-test('compact mode expands failed inspection Tools', () => {
+test('compact mode summarizes failed inspection Tools with one actionable error line', () => {
   const output: string[] = []
   const trace = createConsoleTrace({ write: text => output.push(text), colors: false })
 
-  trace({
+  trace.handle({
     type: 'tool.completed',
     turnId: 'turn',
     step: 1,
@@ -107,16 +108,108 @@ test('compact mode expands failed inspection Tools', () => {
   })
 
   const rendered = output.join('\n')
-  assert.match(rendered, /Read read-failed/)
-  assert.match(rendered, /"path": "\/missing\.ts"/)
-  assert.match(rendered, /Error: file not found/)
+  assert.match(rendered, /Read failed 3ms · \/missing\.ts · Error: file not found/)
+  assert.doesNotMatch(rendered, /Arguments|Result/)
+})
+
+test('compact mode shows a Bash command without its result', () => {
+  const output: string[] = []
+  const trace = createConsoleTrace({ write: text => output.push(text), colors: false })
+
+  trace.handle({
+    type: 'tool.started',
+    turnId: 'turn',
+    step: 1,
+    call: {
+      id: 'bash-1',
+      name: 'Bash',
+      arguments: { cwd: '/project', command: 'pnpm test' },
+    },
+  })
+  trace.handle({
+    type: 'tool.completed',
+    turnId: 'turn',
+    step: 1,
+    call: {
+      id: 'bash-1',
+      name: 'Bash',
+      arguments: { cwd: '/project', command: 'pnpm test' },
+    },
+    durationMs: 30,
+    failed: false,
+    content: '{"exitCode":0,"stdout":"91 tests passed"}',
+  })
+
+  const rendered = output.join('\n')
+  assert.match(rendered, /▶ Bash pnpm test/)
+  assert.doesNotMatch(rendered, /91 tests passed|Result|exitCode/)
+})
+
+test('compact mode hides intermediate reasoning while retaining the model decision', () => {
+  const output: string[] = []
+  const trace = createConsoleTrace({ write: text => output.push(text), colors: false })
+
+  trace.handle({
+    type: 'model.completed',
+    turnId: 'turn',
+    step: 1,
+    durationMs: 500,
+    output: {
+      kind: 'tool-calls',
+      content: 'I will inspect the configuration.',
+      reasoningContent: 'A long provider reasoning trace.',
+      calls: [{ id: 'read-1', name: 'Read', arguments: { path: '/project/config.ts' } }],
+    },
+  })
+
+  const rendered = output.join('\n')
+  assert.match(rendered, /Model responded 1 tool call · 500ms/)
+  assert.match(rendered, /Plan I will inspect the configuration\./)
+  assert.doesNotMatch(rendered, /provider reasoning|A long provider reasoning trace/i)
+})
+
+test('verbose mode renders JSON Tool Results as named fields', () => {
+  const output: string[] = []
+  const trace = createConsoleTrace({
+    write: text => output.push(text),
+    colors: false,
+    mode: 'verbose',
+  })
+
+  trace.handle({
+    type: 'tool.completed',
+    turnId: 'turn',
+    step: 1,
+    call: { id: 'bash-1', name: 'Bash', arguments: { command: 'pnpm test' } },
+    durationMs: 20,
+    failed: false,
+    content: JSON.stringify({
+      cwd: '/project',
+      command: 'pnpm test',
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      durationMs: 18,
+      stdout: '91 tests passed',
+      stderr: '',
+      stdoutTruncated: false,
+      stderrTruncated: false,
+    }),
+  })
+
+  const rendered = output.join('\n')
+  assert.match(rendered, /exitCode: 0/)
+  assert.match(rendered, /timedOut: false/)
+  assert.match(rendered, /stdout: 91 tests passed/)
+  assert.doesNotMatch(rendered, /"exitCode"|[{}]/)
 })
 
 test('bounds expanded Tool Results with useful head and tail content', () => {
   const output: string[] = []
   const trace = createConsoleTrace({ write: text => output.push(text), colors: false })
+  trace.toggleMode()
 
-  trace({
+  trace.handle({
     type: 'tool.completed',
     turnId: 'turn',
     step: 1,
@@ -138,9 +231,10 @@ test('states when the provider returns no reasoning content', () => {
   const trace = createConsoleTrace({
     write: text => output.push(text),
     renderMarkdown: source => `preview: ${source}`,
+    mode: 'verbose',
   })
 
-  trace({
+  trace.handle({
     type: 'model.completed',
     turnId: 'turn',
     step: 1,
@@ -152,17 +246,17 @@ test('states when the provider returns no reasoning content', () => {
   assert.match(output.join('\n'), /Final content\n│    preview: done/)
 })
 
-test('renders provider headers, first SSE event, completion, and transport causes', () => {
+test('verbose mode renders provider headers, first SSE event, completion, and transport causes', () => {
   const output: string[] = []
-  const trace = createConsoleTrace({ write: text => output.push(text), colors: false })
+  const trace = createConsoleTrace({ write: text => output.push(text), colors: false, mode: 'verbose' })
 
-  trace({
+  trace.handle({
     type: 'model.attempt',
     turnId: 'turn',
     step: 1,
     event: { type: 'started', attempt: 1 },
   })
-  trace({
+  trace.handle({
     type: 'model.attempt',
     turnId: 'turn',
     step: 1,
@@ -173,7 +267,7 @@ test('renders provider headers, first SSE event, completion, and transport cause
       durationMs: 1_200,
     },
   })
-  trace({
+  trace.handle({
     type: 'model.attempt',
     turnId: 'turn',
     step: 1,
@@ -184,7 +278,7 @@ test('renders provider headers, first SSE event, completion, and transport cause
       durationMs: 1_350,
     },
   })
-  trace({
+  trace.handle({
     type: 'model.attempt',
     turnId: 'turn',
     step: 1,
@@ -196,7 +290,7 @@ test('renders provider headers, first SSE event, completion, and transport cause
       eventCount: 12,
     },
   })
-  trace({
+  trace.handle({
     type: 'model.attempt',
     turnId: 'turn',
     step: 2,
@@ -220,11 +314,66 @@ test('renders provider headers, first SSE event, completion, and transport cause
   assert.match(rendered, /Provider attempt 2 failed requesting · 300\.00s · UND_ERR_HEADERS_TIMEOUT/)
 })
 
+test('compact mode combines provider timing milestones and can toggle to semantic verbose fields', () => {
+  const output: string[] = []
+  const trace = createConsoleTrace({ write: text => output.push(text), colors: false })
+
+  trace.handle({
+    type: 'model.attempt',
+    turnId: 'turn',
+    step: 1,
+    event: { type: 'started', attempt: 1 },
+  })
+  trace.handle({
+    type: 'model.attempt',
+    turnId: 'turn',
+    step: 1,
+    event: { type: 'headers-received', attempt: 1, httpStatus: 200, durationMs: 400 },
+  })
+  trace.handle({
+    type: 'model.attempt',
+    turnId: 'turn',
+    step: 1,
+    event: {
+      type: 'first-event',
+      attempt: 1,
+      eventType: 'response.created',
+      durationMs: 450,
+    },
+  })
+  trace.handle({
+    type: 'model.attempt',
+    turnId: 'turn',
+    step: 1,
+    event: { type: 'completed', attempt: 1, httpStatus: 200, durationMs: 900, eventCount: 20 },
+  })
+
+  assert.deepEqual(output, ['│  ✓ SSE completed 20 events · headers 400ms · first 450ms · total 900ms'])
+  assert.equal(trace.toggleMode(), 'verbose')
+  assert.equal(trace.getMode(), 'verbose')
+  trace.handle({
+    type: 'tool.started',
+    turnId: 'turn',
+    step: 2,
+    call: {
+      id: 'bash-2',
+      name: 'Bash',
+      arguments: { cwd: '/project', command: 'pnpm typecheck', timeoutMs: 30_000 },
+    },
+  })
+  const rendered = output.join('\n')
+  assert.match(rendered, /command: pnpm typecheck/)
+  assert.match(rendered, /cwd: \/project/)
+  assert.match(rendered, /timeoutMs: 30000/)
+  assert.doesNotMatch(rendered, /"command"|[{}]/)
+  assert.equal(trace.toggleMode(), 'compact')
+})
+
 test('renders Loop Guard reminders as execution-chain checkpoints', () => {
   const output: string[] = []
   const trace = createConsoleTrace({ write: text => output.push(text), colors: false })
 
-  trace({
+  trace.handle({
     type: 'loop-guard.reminded',
     turnId: 'turn',
     afterStep: 3,

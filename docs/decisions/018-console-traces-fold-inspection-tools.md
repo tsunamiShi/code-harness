@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted
+Superseded in part by ADR-026
+
+ADR-026 adds runtime `Ctrl+O` mode switching, further reduces compact output, and replaces raw JSON presentation in verbose mode. The successful-inspection folding and persistence boundaries in this decision remain accepted.
 
 ## Date
 
