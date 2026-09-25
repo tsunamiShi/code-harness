@@ -11,6 +11,7 @@ import {
   type SessionStore,
 } from './session-store.ts'
 import type { Message, Model, ModelAttemptEvent, ModelOutput, Tool, ToolCall } from './types.ts'
+import { ModelContinuationUnavailableError } from './model-errors.ts'
 import {
   type LoopGuard,
   type LoopGuardReminder,
@@ -293,60 +294,76 @@ export class AgentSession {
 
     await reviewIfDue(firstStep - 1)
     for (let step = firstStep; ; step += 1) {
-      const messages = this.requestMessages()
       const tools = this.toolDescriptions
+      const initialMessages = this.requestMessages()
       this.emit({
         type: 'step.started',
         turnId,
         step,
-        messageCount: messages.length,
+        messageCount: initialMessages.length,
         toolCount: tools.length,
       })
-      await this.options.store.record(this.id, {
-        type: 'model.invocation-started',
-        turnId,
-        step,
-        ...(this.options.model.descriptor === undefined
-          ? {}
-          : { descriptor: this.options.model.descriptor }),
-        messageCount: messages.length,
-        toolCount: tools.length,
-        inputChars: JSON.stringify({
-          messages,
-          tools,
-          previousResponseId: this.providerContinuation?.responseId,
-        }).length,
-        ...(this.maxTokens === undefined ? {} : { maxTokens: this.maxTokens }),
-      })
-      const modelStartedAt = performance.now()
       let output: ModelOutput
-      try {
-        output = await this.options.model.generate({
-          messages,
-          tools,
-          ...(this.maxTokens === undefined ? {} : { maxTokens: this.maxTokens }),
-          ...(this.providerContinuation === undefined
-            ? {}
-            : { previousResponseId: this.providerContinuation.responseId }),
-          onAttempt: async event => {
-            await this.options.store.record(this.id, {
-              type: 'model.attempt',
-              turnId,
-              step,
-              event,
-            })
-            this.emit({ type: 'model.attempt', turnId, step, event })
-          },
-        })
-      } catch (error: unknown) {
+      let modelStartedAt = performance.now()
+      let replayedUnavailableContinuation = false
+      while (true) {
+        const messages = this.requestMessages()
+        const continuation = this.providerContinuation
         await this.options.store.record(this.id, {
-          type: 'model.invocation-failed',
+          type: 'model.invocation-started',
           turnId,
           step,
-          errorName: errorName(error),
-          error: errorMessage(error),
+          ...(this.options.model.descriptor === undefined
+            ? {}
+            : { descriptor: this.options.model.descriptor }),
+          messageCount: messages.length,
+          toolCount: tools.length,
+          inputChars: JSON.stringify({
+            messages,
+            tools,
+            previousResponseId: continuation?.responseId,
+          }).length,
+          ...(this.maxTokens === undefined ? {} : { maxTokens: this.maxTokens }),
         })
-        throw error
+        modelStartedAt = performance.now()
+        try {
+          output = await this.options.model.generate({
+            messages,
+            tools,
+            ...(this.maxTokens === undefined ? {} : { maxTokens: this.maxTokens }),
+            ...(continuation === undefined
+              ? {}
+              : { previousResponseId: continuation.responseId }),
+            onAttempt: async event => {
+              await this.options.store.record(this.id, {
+                type: 'model.attempt',
+                turnId,
+                step,
+                event,
+              })
+              this.emit({ type: 'model.attempt', turnId, step, event })
+            },
+          })
+        } catch (error: unknown) {
+          await this.options.store.record(this.id, {
+            type: 'model.invocation-failed',
+            turnId,
+            step,
+            errorName: errorName(error),
+            error: errorMessage(error),
+          })
+          if (
+            continuation !== undefined
+            && !replayedUnavailableContinuation
+            && error instanceof ModelContinuationUnavailableError
+          ) {
+            this.providerContinuation = undefined
+            replayedUnavailableContinuation = true
+            continue
+          }
+          throw error
+        }
+        break
       }
       await this.options.store.record(this.id, {
         type: 'model.invocation-completed',

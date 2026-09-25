@@ -2,7 +2,7 @@
 
 ## Status
 
-Superseded in part by ADR-024
+Superseded in part by ADR-024 and ADR-029
 
 ## Date
 
@@ -55,5 +55,5 @@ Replaying every typed output item can preserve reasoning state without Provider 
 - MySQL schema version 7 stores `provider_response_id` on `agent_steps`.
 - Session recovery can continue a Provider response chain after process restart.
 - Existing Sessions without a Response ID bootstrap the new chain by sending their full projected context once.
-- The Provider must retain the referenced response. Expired or deleted response chains currently fail the Invocation instead of automatically replaying full history.
+- The Provider must retain the referenced response for incremental continuation. ADR-029 adds a bounded full-history replay when the Provider confirms that the response chain is unavailable.
 - Provider-hosted Tools remain unavailable until explicitly modeled and registered.

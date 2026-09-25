@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import { AgentSession, runAgent, type AgentEvent } from '../../src/runtime/agent-session.ts'
 import { NoProgressLoopGuard, type LoopGuard } from '../../src/runtime/loop-guard.ts'
+import { ModelContinuationUnavailableError } from '../../src/runtime/model-errors.ts'
 import type { SessionRecord, SessionStore } from '../../src/runtime/session-store.ts'
 import { MemorySessionStore } from '../../src/storage/memory-session-store.ts'
 import type { Message, Model, ModelOutput, Tool } from '../../src/runtime/types.ts'
@@ -920,4 +921,123 @@ test('restores the last Responses continuation after reopening a session', async
   })
 
   assert.equal(await resumed.send('second'), 'second done')
+})
+
+test('replays durable history when a restored Responses continuation is unavailable', async () => {
+  const store = new MemorySessionStore()
+  const project = {
+    id: 'project-1',
+    name: 'demo',
+    roots: [{ path: '/project', role: 'primary' as const }],
+  }
+  const first = await AgentSession.create({
+    model: {
+      async generate() {
+        return {
+          kind: 'final',
+          content: 'first done',
+          metadata: { providerResponseId: 'response-expired' },
+        }
+      },
+    },
+    tools: [],
+    store,
+    project,
+  })
+  await first.send('first')
+
+  const requests: Array<{
+    messages: readonly Message[]
+    previousResponseId?: string
+  }> = []
+  const resumed = await AgentSession.resume(first.id, {
+    model: {
+      async generate(input) {
+        requests.push({
+          messages: structuredClone(input.messages),
+          ...(input.previousResponseId === undefined
+            ? {}
+            : { previousResponseId: input.previousResponseId }),
+        })
+        if (requests.length === 1) {
+          throw new ModelContinuationUnavailableError('Previous response expired')
+        }
+        return {
+          kind: 'final',
+          content: 'second done',
+          metadata: { providerResponseId: 'response-rebuilt' },
+        }
+      },
+    },
+    tools: [],
+    store,
+    project,
+  })
+
+  assert.equal(await resumed.send('second'), 'second done')
+  assert.deepEqual(requests.map(request => ({
+    roles: request.messages.map(message => message.role),
+    ...(request.previousResponseId === undefined
+      ? {}
+      : { previousResponseId: request.previousResponseId }),
+  })), [
+    {
+      roles: ['user'],
+      previousResponseId: 'response-expired',
+    },
+    {
+      roles: ['system', 'user', 'assistant', 'user'],
+    },
+  ])
+
+  const resumedAgain = await AgentSession.resume(first.id, {
+    model: {
+      async generate(input) {
+        assert.equal(input.previousResponseId, 'response-rebuilt')
+        assert.deepEqual(input.messages, [{ role: 'user', content: 'third' }])
+        return {
+          kind: 'final',
+          content: 'third done',
+          metadata: { providerResponseId: 'response-next' },
+        }
+      },
+    },
+    tools: [],
+    store,
+    project,
+  })
+  assert.equal(await resumedAgain.send('third'), 'third done')
+})
+
+test('does not replay durable history for an ordinary model failure', async () => {
+  const store = new MemorySessionStore()
+  const first = await AgentSession.create({
+    model: {
+      async generate() {
+        return {
+          kind: 'final',
+          content: 'first done',
+          metadata: { providerResponseId: 'response-active' },
+        }
+      },
+    },
+    tools: [],
+    store,
+  })
+  await first.send('first')
+
+  let requests = 0
+  const resumed = await AgentSession.resume(first.id, {
+    model: {
+      async generate() {
+        requests += 1
+        throw new Error('provider unavailable')
+      },
+    },
+    tools: [],
+    store,
+  })
+
+  await assert.rejects(resumed.send('second'), /provider unavailable/)
+  assert.equal(requests, 1)
 })

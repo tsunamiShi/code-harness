@@ -4,6 +4,7 @@ import test from 'node:test'
 import OpenAI from 'openai'
 
 import { OpenAICompatibleResponsesModel } from '../../src/models/openai-compatible-responses-model.ts'
+import { ModelContinuationUnavailableError } from '../../src/runtime/model-errors.ts'
 import type { ModelAttemptEvent, ToolDescription } from '../../src/runtime/types.ts'
 
 const readTool: ToolDescription = {
@@ -91,6 +92,64 @@ test('uses the Responses endpoint and maps incremental function inputs and outpu
       finishReason: 'completed',
     },
   })
+})
+
+test('classifies an unavailable previous response for Runtime replay', async () => {
+  const model = new OpenAICompatibleResponsesModel({
+    apiKey: 'test-key',
+    baseURL: 'https://provider.example/compatible-mode/v1',
+    model: 'test-model',
+    maxRetries: 0,
+    fetch: async () => new Response(JSON.stringify({
+      error: {
+        code: 'InvalidParameter',
+        param: 'previous_response_id',
+        message: 'The previous response has expired.',
+        type: 'invalid_request_error',
+      },
+    }), {
+      status: 400,
+      headers: { 'content-type': 'application/json' },
+    }),
+  })
+
+  await assert.rejects(
+    model.generate({
+      messages: [{ role: 'user', content: 'continue' }],
+      tools: [],
+      previousResponseId: 'response-expired',
+    }),
+    ModelContinuationUnavailableError,
+  )
+})
+
+test('does not classify an unrelated bad request as continuation loss', async () => {
+  const model = new OpenAICompatibleResponsesModel({
+    apiKey: 'test-key',
+    baseURL: 'https://provider.example/compatible-mode/v1',
+    model: 'test-model',
+    maxRetries: 0,
+    fetch: async () => new Response(JSON.stringify({
+      error: {
+        code: 'InvalidParameter',
+        param: 'tools',
+        message: 'The tools parameter is invalid.',
+        type: 'invalid_request_error',
+      },
+    }), {
+      status: 400,
+      headers: { 'content-type': 'application/json' },
+    }),
+  })
+
+  await assert.rejects(
+    model.generate({
+      messages: [{ role: 'user', content: 'continue' }],
+      tools: [],
+      previousResponseId: 'response-active',
+    }),
+    error => error instanceof OpenAI.BadRequestError,
+  )
 })
 
 test('reports every provider attempt and completed response metadata', async () => {

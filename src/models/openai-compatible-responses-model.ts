@@ -16,6 +16,7 @@ import type {
   ModelUsage,
   ToolDescription,
 } from '../runtime/types.ts'
+import { ModelContinuationUnavailableError } from '../runtime/model-errors.ts'
 
 export interface OpenAICompatibleResponsesModelOptions {
   apiKey: string
@@ -103,8 +104,9 @@ export class OpenAICompatibleResponsesModel implements Model {
         },
       )
     } catch (error: unknown) {
-      await attempts.failCurrent(error)
-      throw error
+      const classified = classifyContinuationError(input.previousResponseId, error)
+      await attempts.failCurrent(classified)
+      throw classified
     }
 
     const requestId = attempts.completedProviderRequestId
@@ -187,6 +189,40 @@ export class OpenAICompatibleResponsesModel implements Model {
     }
     return response
   }
+}
+
+function classifyContinuationError(
+  previousResponseId: string | undefined,
+  error: unknown,
+): unknown {
+  if (
+    previousResponseId === undefined
+    || !(error instanceof OpenAI.APIError)
+    || (error.status !== 400 && error.status !== 404)
+  ) return error
+
+  const param = error.param?.toLocaleLowerCase('en-US')
+  const evidence = [
+    error.code,
+    error.type,
+    error.message,
+    JSON.stringify(error.error),
+  ].filter((value): value is string => typeof value === 'string')
+    .join(' ')
+    .toLocaleLowerCase('en-US')
+  const mentionsContinuation = param === 'previous_response_id'
+    || evidence.includes('previous_response_id')
+    || evidence.includes('previous response')
+    || evidence.includes(previousResponseId.toLocaleLowerCase('en-US'))
+  const isUnavailable = param === 'previous_response_id'
+    || /\b(expired|invalid|not[ _-]?found|does not exist|deleted|unavailable|unknown)\b/u.test(evidence)
+
+  return mentionsContinuation && isUnavailable
+    ? new ModelContinuationUnavailableError(
+        'Model provider cannot continue from the previous response; replay is required',
+        { cause: error },
+      )
+    : error
 }
 
 interface ActiveAttempt {
