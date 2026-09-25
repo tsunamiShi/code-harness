@@ -46,6 +46,18 @@ _Avoid_: Final Answer、Message
 模型在一个 Step 中返回的一组 Tool Calls。仅当所有目标 Tools 都声明为 parallel-safe 时并行执行，仍然只计为一个 Step。
 _Avoid_: Multi-Step、Read Many
 
+**MCP Server**:
+通过 Model Context Protocol 暴露外部 Tools 的本地子进程或远程端点。CLI 只有在用户显式提供 MCP 配置时才连接 Server；Server 不属于 Project，也不改变 Filesystem Access Mode。
+_Avoid_: Model Provider、Runtime Tool
+
+**MCP Tool Set**:
+CLI 启动时从所有已配置 MCP Servers 完成握手和工具发现后得到的进程级 Tool 集合。它把远程工具适配到 Runtime Tool interface，并统一拥有连接关闭生命周期；运行中的 Agent Session 使用该集合的静态快照。
+_Avoid_: Provider-hosted Tool、Dynamic Tool Registry
+
+**MCP Tool**:
+由 MCP Server 提供并适配为 Runtime Tool 的能力。模型可见名称使用 `mcp__<server>__<tool>` 命名空间；Tool Call 和 Tool Result 仍由 Agent Loop 持久化。
+_Avoid_: Built-in Tool、MCP Server
+
 ### Project filesystem
 
 **Project**:

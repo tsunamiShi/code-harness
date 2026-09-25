@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  agentMcpConfigPathFromEnvironment,
   agentMaxTokensFromEnvironment,
   agentLoopGuardModelFromEnvironment,
   agentLoopGuardThresholdsFromEnvironment,
@@ -9,6 +10,21 @@ import {
   agentTraceMaxResultCharsFromEnvironment,
   agentTraceModeFromEnvironment,
 } from '../../src/cli/config.ts'
+
+test('uses an explicit MCP config before the environment fallback', () => {
+  const previous = process.env.AGENT_MCP_CONFIG
+  try {
+    process.env.AGENT_MCP_CONFIG = '/environment/.mcp.json'
+    assert.equal(agentMcpConfigPathFromEnvironment('/cli/.mcp.json'), '/cli/.mcp.json')
+    assert.equal(agentMcpConfigPathFromEnvironment(), '/environment/.mcp.json')
+
+    process.env.AGENT_MCP_CONFIG = ''
+    assert.throws(agentMcpConfigPathFromEnvironment, /Invalid AGENT_MCP_CONFIG/)
+  } finally {
+    if (previous === undefined) delete process.env.AGENT_MCP_CONFIG
+    else process.env.AGENT_MCP_CONFIG = previous
+  }
+})
 
 test('reads a per-model-invocation output token limit from the environment', () => {
   const previous = process.env.AGENT_MAX_TOKENS

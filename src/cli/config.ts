@@ -33,6 +33,13 @@ export function agentMaxTokensFromEnvironment(): number | undefined {
   return maxTokens
 }
 
+export function agentMcpConfigPathFromEnvironment(cliValue?: string): string | undefined {
+  const value = cliValue ?? process.env.AGENT_MCP_CONFIG
+  if (value === undefined) return undefined
+  if (value.trim().length === 0) throw new Error('Invalid AGENT_MCP_CONFIG: path must not be empty')
+  return value
+}
+
 export function agentTraceModeFromEnvironment(): AgentTraceMode {
   const value = process.env.AGENT_TRACE ?? 'compact'
   if (value !== 'compact' && value !== 'verbose') {

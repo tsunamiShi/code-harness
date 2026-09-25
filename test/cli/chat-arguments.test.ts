@@ -26,3 +26,39 @@ test('enables full filesystem access for one CLI process', () => {
     accessMode: 'full',
   })
 })
+
+test('accepts an explicit MCP config in either flag order', () => {
+  assert.deepEqual(
+    readChatTarget([
+      '--mcp-config',
+      '/tmp/project.mcp.json',
+      '--project',
+      'project-1',
+      '--full-access',
+    ]),
+    {
+      kind: 'project',
+      id: 'project-1',
+      accessMode: 'full',
+      mcpConfigPath: '/tmp/project.mcp.json',
+    },
+  )
+})
+
+test('rejects duplicate or incomplete MCP config arguments', () => {
+  assert.throws(
+    () => readChatTarget(['--project', 'project-1', '--mcp-config']),
+    /Usage:/,
+  )
+  assert.throws(
+    () => readChatTarget([
+      '--project',
+      'project-1',
+      '--mcp-config',
+      'one.json',
+      '--mcp-config',
+      'two.json',
+    ]),
+    /Usage:/,
+  )
+})

@@ -1,6 +1,6 @@
 # AI Agent
 
-这是一个从最小 Agent Loop 演进为可部署 Code Agent 的 TypeScript 项目。当前版本支持真实模型、工具调用、多轮对话、Multi-root Project、受 Project Root 约束的代码探索和精确文件修改，以及 MySQL 持久化和恢复。
+这是一个从最小 Agent Loop 演进为可部署 Code Agent 的 TypeScript 项目。当前版本支持真实模型、内置与 MCP 工具调用、多轮对话、Multi-root Project、受 Project Root 约束的代码探索和精确文件修改，以及 MySQL 持久化和恢复。
 
 ## 当前运行模型
 
@@ -51,6 +51,40 @@ CLI 在 Scoped 模式暴露六个代码工具：
 `LSP` 当前支持 `definition / references / hover`，并按文件类型选择语言服务：TypeScript/JavaScript 使用 `typescript-language-server`，Vue SFC 使用 `@vue/language-server` 与 `@vue/typescript-plugin` 组成的复合适配器。Vue Language Server 负责 SFC 文档服务及其自定义协议，Vue TypeScript Plugin 通过 `tsserver` 提供 `<script>` 内的 TypeScript 语义。这个差异被封装在同一个模型可见工具后面，避免为每种语言增加一套工具。
 
 模型统一使用从 1 开始的行列号，Runtime 将不同协议结果归一化为绝对路径，并过滤 Language Server Root 之外的位置。同一个 CLI 进程按 Runtime 推导出的 Project Root 和语言 Provider 复用 Language Server；Full Access 路径不属于 Project 时，Runtime 向上寻找最近的 TypeScript、JavaScript、Package 或 Git 项目标记。查询前通过 `didOpen / didChange` 同步当前文件，单个客户端内串行执行协议请求。客户端池最多保留四组进程，使用 LRU 回收较旧的 Root；CLI 退出时通过 Tool 的 `close()` 生命周期钩子关闭全部子进程。进程意外退出后，下一次只读查询会重建客户端并重试一次。
+
+## MCP Tools
+
+CLI 可以把 MCP Server 的工具发现并适配到同一个 Runtime Tool registry。当前支持 stdio、Streamable HTTP 和显式 legacy SSE transport；兼容 portable `.mcp.json` 的 `mcpServers`，也兼容 VS Code `mcp.json` 的 `servers`。MCP 必须通过 `--mcp-config` 或 `AGENT_MCP_CONFIG` 显式启用，CLI 不会因为 Project 内存在 `.mcp.json` 就自动执行其中的本地命令。
+
+模型看到的名称是 `mcp__<server>__<tool>`。MCP 输入 JSON Schema 会直接成为模型可见参数；纯文本结果直接返回文本，包含 structured content、图片、音频或资源的结果保留为 JSON。`isError`、协议错误、transport 错误和超时都会作为失败 Tool Result 持久化并反馈给模型。CLI 退出时会终止远程 session，并关闭全部 client 和 stdio 子进程。
+
+示例 portable 配置：
+
+```json
+{
+  "mcpServers": {
+    "local-tools": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@example/mcp-server"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "SERVICE_TOKEN": "${SERVICE_TOKEN}"
+      },
+      "timeoutMs": 60000
+    },
+    "remote-tools": {
+      "type": "http",
+      "url": "${MCP_BASE_URL:-https://example.com}/mcp",
+      "headers": {
+        "Authorization": "Bearer ${MCP_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+`type` 可省略：包含 `command` 时推断为 stdio，包含 `url` 时推断为 Streamable HTTP。变量支持 `${VAR}`、`${VAR:-default}` 和 `${workspaceFolder}`；缺失且没有默认值的变量会在任何 Server 启动前使配置失败。`disabled: true` 或 `enabled: false` 可跳过一个条目。不要把令牌直接提交到配置文件。
 
 Full Access 模式额外暴露 `Bash`。它要求一个绝对 `cwd`，返回退出码、信号、stdout、stderr、超时和截断信息；非零退出属于可供模型修正的执行结果。当前默认超时 30 秒、最大 120 秒，stdout/stderr 各最多返回 64,000 字符。
 
@@ -104,6 +138,14 @@ pnpm project show <project-id>
 ```sh
 pnpm chat -- --project <project-id>
 ```
+
+显式连接 MCP Server：
+
+```sh
+pnpm chat -- --project <project-id> --mcp-config /absolute/path/to/.mcp.json
+```
+
+也可以在 `.env` 中设置 `AGENT_MCP_CONFIG`。命令行参数优先于环境变量。恢复 Session 时需要再次提供或保留该配置，因为 MCP 连接属于当前 CLI 进程，不写入 Session。
 
 需要跳过 Project Root 白名单时，可以为当前 CLI 进程显式开启完全文件系统访问：
 
@@ -176,6 +218,7 @@ Reasoning Content 只来自供应商 Responses 输出中的 `reasoning` item（`
 - [ADR-024: Responses continuation sends System instructions only once](docs/decisions/024-responses-continuation-sends-system-once.md)
 - [ADR-025: Responses stream and Provider Attempt milestones are durable](docs/decisions/025-stream-responses-and-persist-attempt-milestones.md)
 - [ADR-026: Console Trace toggles density at runtime](docs/decisions/026-console-trace-toggles-density-at-runtime.md)
+- [ADR-027: MCP Tools adapt into the Runtime registry](docs/decisions/027-mcp-tools-adapt-into-runtime-registry.md)
 
 ## 当前限制
 
@@ -185,6 +228,7 @@ Reasoning Content 只来自供应商 Responses 输出中的 `reasoning` item（`
 - Bash 尚无 OS sandbox、Approval、交互式 stdin 和持久终端；只能在 Full Access 下执行一次性命令。
 - LSP 当前只支持 Vue/TypeScript/JavaScript；首次查询仍有 Language Server 冷启动成本，Vue Provider 还需要额外启动启用 Vue 插件的 `tsserver`。
 - Project 支持追加 Attached Root，但尚未支持移除 Root、更换 Primary Root 和运行时热更新。
+- MCP 当前只接入 Tools；Resources、Prompts、交互式 Elicitation、Sampling callback 和浏览器 OAuth 尚未接入。运行中 Server 的工具列表变化需要重启 CLI。
 - CLI 会恢复最终的 `running` 或 `failed` Turn，但尚未实现多进程租约，不能安全支持两个进程同时恢复同一 Session。
 - 工具副作用与结果入库不是一个原子事务；自动重试前需要幂等键或 outbox。
 - 长对话尚未加入上下文窗口预算、摘要和裁剪策略。
