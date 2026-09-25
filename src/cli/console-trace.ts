@@ -7,6 +7,7 @@ const COMPACT_INLINE_CHARACTERS = 240
 
 export interface ConsoleTraceOptions {
   write: (text: string) => void
+  writeFragment?: (text: string) => void
   colors?: boolean
   mode?: AgentTraceMode
   maxToolResultChars?: number
@@ -26,6 +27,27 @@ export function createConsoleTrace(options: ConsoleTraceOptions): ConsoleTrace {
   const maxToolResultChars = options.maxToolResultChars ?? DEFAULT_MAX_TOOL_RESULT_CHARS
   let collapsedTools: ToolCompletedEvent[] = []
   const attempts = new Map<number, { headersMs?: number; firstEventMs?: number }>()
+  const writeFragment = options.writeFragment ?? options.write
+  const renderedStreams = new Set<string>()
+  let activeStreamKey: string | undefined
+
+  const finishActiveStream = (): void => {
+    if (activeStreamKey === undefined) return
+    writeFragment('\n')
+    activeStreamKey = undefined
+  }
+
+  const renderDelta = (event: ModelDeltaEvent): void => {
+    const key = `${event.turnId}:${event.step}:${event.event.type}`
+    if (activeStreamKey !== key) {
+      finishActiveStream()
+      const label = event.event.type === 'reasoning' ? 'Provider reasoning' : 'Final content'
+      writeFragment(`│  ${label}\n│    `)
+      activeStreamKey = key
+      renderedStreams.add(key)
+    }
+    writeFragment(event.event.delta.replaceAll('\n', '\n│    '))
+  }
 
   const flushCollapsedTools = (): void => {
     if (collapsedTools.length === 0) return
@@ -44,6 +66,11 @@ export function createConsoleTrace(options: ConsoleTraceOptions): ConsoleTrace {
   }
 
   const handle = (event: AgentEvent): void => {
+    if (event.type === 'model.delta') {
+      renderDelta(event)
+      return
+    }
+    finishActiveStream()
     if (
       event.type === 'turn.started'
       || event.type === 'turn.resumed'
@@ -124,6 +151,12 @@ export function createConsoleTrace(options: ConsoleTraceOptions): ConsoleTrace {
         return
       }
       case 'model.completed':
+        const streamedReasoning = renderedStreams.delete(
+          `${event.turnId}:${event.step}:reasoning`,
+        )
+        const streamedOutput = renderedStreams.delete(
+          `${event.turnId}:${event.step}:output-text`,
+        )
         if (mode === 'compact') {
           const decision = event.output.kind === 'final'
             ? 'final answer'
@@ -131,31 +164,31 @@ export function createConsoleTrace(options: ConsoleTraceOptions): ConsoleTrace {
           options.write(
             `│  ${color.green('✓')} Model responded ${color.dim(`${decision} · ${formatDuration(event.durationMs)}`)}`,
           )
-          if (event.output.kind === 'final') {
+          if (event.output.kind === 'final' && !streamedOutput) {
             options.write(block(
               'Final content',
               options.renderMarkdown?.(event.output.content) ?? event.output.content,
               value => value,
             ))
-          } else if (event.output.content !== undefined) {
+          } else if (event.output.kind === 'tool-calls' && event.output.content !== undefined && !streamedOutput) {
             options.write(`│  ${color.green('Plan')} ${compactInline(event.output.content)}`)
           }
           return
         }
         options.write(`│  ${color.green('✓')} Model responded ${color.dim(formatDuration(event.durationMs))}`)
-        if (event.output.reasoningContent) {
+        if (event.output.reasoningContent && !streamedReasoning) {
           options.write(block('Provider reasoning', event.output.reasoningContent, color.magenta))
-        } else {
+        } else if (!streamedReasoning) {
           options.write(`│  ${color.dim('Provider reasoning: not returned')}`)
         }
-        if (event.output.kind === 'final') {
+        if (event.output.kind === 'final' && !streamedOutput) {
           options.write(block(
             'Final content',
             options.renderMarkdown?.(event.output.content) ?? event.output.content,
             value => value,
           ))
-        } else {
-          if (event.output.content !== undefined) {
+        } else if (event.output.kind === 'tool-calls') {
+          if (event.output.content !== undefined && !streamedOutput) {
             options.write(block('Model content', event.output.content, color.green))
           }
           options.write(`│  ${color.cyan('Tool calls')} ${event.output.calls.length}`)
@@ -217,6 +250,7 @@ export function createConsoleTrace(options: ConsoleTraceOptions): ConsoleTrace {
     handle,
     getMode: () => mode,
     toggleMode: () => {
+      finishActiveStream()
       flushCollapsedTools()
       mode = mode === 'compact' ? 'verbose' : 'compact'
       return mode
@@ -226,6 +260,7 @@ export function createConsoleTrace(options: ConsoleTraceOptions): ConsoleTrace {
 
 type ToolStartedEvent = Extract<AgentEvent, { type: 'tool.started' }>
 type ToolCompletedEvent = Extract<AgentEvent, { type: 'tool.completed' }>
+type ModelDeltaEvent = Extract<AgentEvent, { type: 'model.delta' }>
 
 function renderToolStarted(
   write: (text: string) => void,

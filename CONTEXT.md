@@ -168,6 +168,10 @@ _Avoid_: First Token Latency、Total Model Latency
 Runtime 在执行过程中同步发出的只读观察记录，用于 CLI 时间线、日志或未来 UI；不会成为 Message，也不改变 Agent 决策。
 _Avoid_: Message、Session Record
 
+**Model Stream Delta**:
+Model Invocation 尚未完成时由 Runtime 临时转发的输出文本或供应商推理文本片段。CLI 可立即展示，但片段不持久化、不进入 Message；完整终态 Model Output 仍是 Step、Tool Call、usage 和恢复的唯一事实来源。
+_Avoid_: Model Output、Session Record、Provider SSE Event
+
 **Execution Trace**:
 一个 Turn 的 Agent Events 按发生顺序形成的可观察执行链路，包括 Model Invocation、Provider Attempt 的响应头与首个 SSE Event 里程碑、模型输出、Tool Call、Tool Result、耗时和最终状态。
 _Avoid_: Message History、Model Context

@@ -13,6 +13,7 @@ import type {
   Model,
   ModelAttemptEvent,
   ModelOutput,
+  ModelStreamEvent,
   ModelUsage,
   ToolDescription,
 } from '../runtime/types.ts'
@@ -63,6 +64,7 @@ export class OpenAICompatibleResponsesModel implements Model {
     maxTokens?: number
     previousResponseId?: string
     onAttempt?: (event: ModelAttemptEvent) => Promise<void>
+    onStream?: (event: ModelStreamEvent) => Promise<void>
   }): Promise<ModelOutput> {
     const attempts = new ProviderAttemptStateMachine(input.onAttempt)
     let response: ModelResponse
@@ -88,6 +90,8 @@ export class OpenAICompatibleResponsesModel implements Model {
           let terminalResponse: ModelResponse | undefined
           for await (const event of stream) {
             await attempts.receiveEvent(event)
+            const streamEvent = toModelStreamEvent(event)
+            if (streamEvent !== undefined) await input.onStream?.(streamEvent)
             if (
               event.type === 'response.completed'
               || event.type === 'response.incomplete'
@@ -189,6 +193,19 @@ export class OpenAICompatibleResponsesModel implements Model {
     }
     return response
   }
+}
+
+function toModelStreamEvent(event: ResponseStreamEvent): ModelStreamEvent | undefined {
+  if (event.type === 'response.output_text.delta') {
+    return { type: 'output-text', delta: event.delta }
+  }
+  if (
+    event.type === 'response.reasoning_text.delta'
+    || event.type === 'response.reasoning_summary_text.delta'
+  ) {
+    return { type: 'reasoning', delta: event.delta }
+  }
+  return undefined
 }
 
 function classifyContinuationError(

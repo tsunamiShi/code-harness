@@ -27,13 +27,14 @@ export function createTurnElapsedDisplay(options: TurnElapsedDisplayOptions): Tu
   const schedule = options.schedule ?? scheduleRefresh
   let startedAt: number | undefined
   let refresh: ScheduledRefresh | undefined
+  let streaming = false
 
   const clear = (): void => {
     if (startedAt !== undefined) options.write(CLEAR_LINE)
   }
 
   const render = (): void => {
-    if (startedAt === undefined) return
+    if (startedAt === undefined || streaming) return
     options.write(`${CLEAR_LINE}⏱ Elapsed ${formatElapsed(now() - startedAt)}`)
   }
 
@@ -41,6 +42,7 @@ export function createTurnElapsedDisplay(options: TurnElapsedDisplayOptions): Tu
     refresh?.cancel()
     refresh = undefined
     startedAt = undefined
+    streaming = false
   }
 
   const start = (): void => {
@@ -57,7 +59,15 @@ export function createTurnElapsedDisplay(options: TurnElapsedDisplayOptions): Tu
         return
       }
 
-      clear()
+      if (event.type === 'model.delta') {
+        if (!streaming) clear()
+        streaming = true
+        renderEvent()
+        return
+      }
+
+      if (!streaming) clear()
+      streaming = false
       if (event.type === 'turn.started' || event.type === 'turn.resumed') start()
       renderEvent()
 
@@ -72,8 +82,9 @@ export function createTurnElapsedDisplay(options: TurnElapsedDisplayOptions): Tu
         renderOutput()
         return
       }
-      clear()
+      if (!streaming) clear()
       renderOutput()
+      streaming = false
       render()
     },
     close() {

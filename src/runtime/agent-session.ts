@@ -10,7 +10,15 @@ import {
   type AgentTurn,
   type SessionStore,
 } from './session-store.ts'
-import type { Message, Model, ModelAttemptEvent, ModelOutput, Tool, ToolCall } from './types.ts'
+import type {
+  Message,
+  Model,
+  ModelAttemptEvent,
+  ModelOutput,
+  ModelStreamEvent,
+  Tool,
+  ToolCall,
+} from './types.ts'
 import { ModelContinuationUnavailableError } from './model-errors.ts'
 import { ToolRegistry } from './tool-registry.ts'
 import {
@@ -61,6 +69,12 @@ export type AgentEvent =
       turnId: string
       step: number
       event: ModelAttemptEvent
+    }
+  | {
+      type: 'model.delta'
+      turnId: string
+      step: number
+      event: ModelStreamEvent
     }
   | {
       type: 'loop-guard.reminded'
@@ -342,6 +356,14 @@ export class AgentSession {
                 event,
               })
               this.emit({ type: 'model.attempt', turnId, step, event })
+            },
+            onStream: async event => {
+              this.emit({
+                type: 'model.delta',
+                turnId,
+                step,
+                event: structuredClone(event),
+              })
             },
           })
         } catch (error: unknown) {

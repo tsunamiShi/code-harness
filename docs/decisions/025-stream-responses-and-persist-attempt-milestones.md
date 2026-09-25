@@ -4,6 +4,10 @@
 
 Accepted
 
+The decision to keep every text delta below `AgentSession` is superseded by
+[ADR-030](030-runtime-forwards-model-stream-deltas.md). The raw SSE decoder and durable Provider
+Attempt milestone decisions remain accepted.
+
 ## Date
 
 2026-09-22
@@ -63,4 +67,4 @@ This preserves simpler transport handling, but total duration alone cannot local
 - SDK retries remain visible as separate Provider Attempts under one Model Invocation.
 - The public Model interface and Step semantics remain unchanged because the Adapter still returns one complete model result.
 - SSE framing and JSON decoding depend on the OpenAI SDK, while Provider-specific intermediate event ordering is not passed through its stricter Response accumulator.
-- User-visible token-by-token output is not implemented; the Adapter currently consumes the stream for observability and returns only after completion.
+- ADR-030 later adds transient user-visible text and reasoning deltas while preserving the complete terminal Response as the durable result.

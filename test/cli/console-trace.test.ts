@@ -145,7 +145,7 @@ test('compact mode shows a Bash command without its result', () => {
   assert.doesNotMatch(rendered, /91 tests passed|Result|exitCode/)
 })
 
-test('compact mode hides intermediate reasoning while retaining the model decision', () => {
+test('compact mode omits terminal reasoning when no streamed deltas were emitted', () => {
   const output: string[] = []
   const trace = createConsoleTrace({ write: text => output.push(text), colors: false })
 
@@ -244,6 +244,50 @@ test('states when the provider returns no reasoning content', () => {
 
   assert.match(output.join('\n'), /Provider reasoning: not returned/)
   assert.match(output.join('\n'), /Final content\n│    preview: done/)
+})
+
+test('renders streamed reasoning and output in compact mode without repeating completed content', () => {
+  const lines: string[] = []
+  const fragments: string[] = []
+  const trace = createConsoleTrace({
+    write: text => lines.push(text),
+    writeFragment: text => fragments.push(text),
+    colors: false,
+  })
+
+  trace.handle({
+    type: 'model.delta',
+    turnId: 'turn',
+    step: 1,
+    event: { type: 'reasoning', delta: 'think ' },
+  })
+  trace.handle({
+    type: 'model.delta',
+    turnId: 'turn',
+    step: 1,
+    event: { type: 'reasoning', delta: 'carefully' },
+  })
+  trace.handle({
+    type: 'model.delta',
+    turnId: 'turn',
+    step: 1,
+    event: { type: 'output-text', delta: 'final answer' },
+  })
+  trace.handle({
+    type: 'model.completed',
+    turnId: 'turn',
+    step: 1,
+    durationMs: 20,
+    output: {
+      kind: 'final',
+      reasoningContent: 'think carefully',
+      content: 'final answer',
+    },
+  })
+
+  assert.equal(fragments.join(''), '│  Provider reasoning\n│    think carefully\n│  Final content\n│    final answer\n')
+  assert.match(lines.join('\n'), /Model responded final answer · 20ms/)
+  assert.doesNotMatch(lines.join('\n'), /think carefully|Final content\n│    final answer/)
 })
 
 test('verbose mode renders provider headers, first SSE event, completion, and transport causes', () => {

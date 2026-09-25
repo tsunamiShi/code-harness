@@ -54,6 +54,11 @@ export interface ModelDescriptor {
 
 export type ModelAttemptPhase = 'requesting' | 'headers-received' | 'streaming'
 
+/** Incremental provider content that is safe to expose while a Model Invocation is running. */
+export type ModelStreamEvent =
+  | { type: 'output-text'; delta: string }
+  | { type: 'reasoning'; delta: string }
+
 export type ModelAttemptEvent =
   | { type: 'started'; attempt: number }
   | {
@@ -100,6 +105,7 @@ export interface Model {
     maxTokens?: number
     previousResponseId?: string
     onAttempt?: (event: ModelAttemptEvent) => Promise<void>
+    onStream?: (event: ModelStreamEvent) => Promise<void>
   }): Promise<ModelOutput>
 }
 

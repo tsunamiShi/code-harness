@@ -19,6 +19,13 @@ const completed: AgentEvent = {
   durationMs: 1_500,
 }
 
+const delta: AgentEvent = {
+  type: 'model.delta',
+  turnId: 'turn-1',
+  step: 1,
+  event: { type: 'output-text', delta: 'hello' },
+}
+
 test('refreshes elapsed time while a Turn is active and stops on completion', () => {
   const output: string[] = []
   let currentTime = 0
@@ -91,6 +98,38 @@ test('temporarily clears and restores elapsed time around shortcut output', () =
   assert.deepEqual(output.slice(-3), [
     '\r\u001B[2K',
     'Trace mode: verbose',
+    '\r\u001B[2K⏱ Elapsed 00:00',
+  ])
+})
+
+test('suspends elapsed redraws while model text is streaming', () => {
+  const output: string[] = []
+  let refresh: (() => void) | undefined
+  const display = createTurnElapsedDisplay({
+    enabled: true,
+    write: text => output.push(text),
+    now: () => 0,
+    schedule: callback => {
+      refresh = callback
+      return { cancel: () => undefined }
+    },
+  })
+
+  display.handle(started, () => output.push('TRACE started'))
+  display.handle(delta, () => output.push('hello'))
+  refresh?.()
+  display.handle({
+    type: 'model.completed',
+    turnId: 'turn-1',
+    step: 1,
+    durationMs: 10,
+    output: { kind: 'final', content: 'hello' },
+  }, () => output.push('\nTRACE completed'))
+
+  assert.deepEqual(output.slice(-4), [
+    '\r\u001B[2K',
+    'hello',
+    '\nTRACE completed',
     '\r\u001B[2K⏱ Elapsed 00:00',
   ])
 })

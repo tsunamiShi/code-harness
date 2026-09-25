@@ -64,6 +64,7 @@ try {
   })
   const trace = createConsoleTrace({
     write: text => console.log(text),
+    writeFragment: text => stdout.write(text),
     mode: traceMode,
     maxToolResultChars: traceMaxResultChars,
     colors: stdout.isTTY && process.env.NO_COLOR === undefined,

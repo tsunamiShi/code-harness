@@ -336,6 +336,48 @@ test('emits an observable execution chain with provider reasoning and tool conte
   )
 })
 
+test('forwards model stream deltas before model completion', async () => {
+  const events: AgentEvent[] = []
+  const model: Model = {
+    async generate(input) {
+      await input.onStream?.({ type: 'reasoning', delta: 'thinking' })
+      await input.onStream?.({ type: 'output-text', delta: 'done' })
+      return { kind: 'final', content: 'done' }
+    },
+  }
+
+  await runAgent({
+    model,
+    tools: [],
+    prompt: 'stream',
+    onEvent: event => events.push(structuredClone(event)),
+  })
+
+  const turnId = events[0]?.type === 'turn.started' ? events[0].turnId : ''
+  assert.deepEqual(events.map(event => event.type), [
+    'turn.started',
+    'step.started',
+    'model.delta',
+    'model.delta',
+    'model.completed',
+    'turn.completed',
+  ])
+  assert.deepEqual(events.slice(2, 4), [
+    {
+      type: 'model.delta',
+      turnId,
+      step: 1,
+      event: { type: 'reasoning', delta: 'thinking' },
+    },
+    {
+      type: 'model.delta',
+      turnId,
+      step: 1,
+      event: { type: 'output-text', delta: 'done' },
+    },
+  ])
+})
+
 test('does not impose a Step limit and applies maxTokens to every model invocation', async () => {
   let request = 0
   const observedMaxTokens: Array<number | undefined> = []

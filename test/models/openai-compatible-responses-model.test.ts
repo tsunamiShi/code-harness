@@ -5,7 +5,7 @@ import OpenAI from 'openai'
 
 import { OpenAICompatibleResponsesModel } from '../../src/models/openai-compatible-responses-model.ts'
 import { ModelContinuationUnavailableError } from '../../src/runtime/model-errors.ts'
-import type { ModelAttemptEvent, ToolDescription } from '../../src/runtime/types.ts'
+import type { ModelAttemptEvent, ModelStreamEvent, ToolDescription } from '../../src/runtime/types.ts'
 
 const readTool: ToolDescription = {
   name: 'Read',
@@ -380,6 +380,77 @@ test('accepts DashScope reasoning deltas without a preceding content part event'
       finishReason: 'completed',
     },
   })
+})
+
+test('forwards output and reasoning deltas before the terminal response completes', async () => {
+  const completed = responseBody({
+    id: 'response-streamed',
+    status: 'completed',
+    output: [{
+      type: 'message',
+      id: 'message-streamed',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text: 'answer', annotations: [] }],
+    }],
+    output_text: 'answer',
+  })
+  const deltas: ModelStreamEvent[] = []
+  const order: string[] = []
+  const model = new OpenAICompatibleResponsesModel({
+    apiKey: 'test-key',
+    baseURL: 'https://provider.example/compatible-mode/v1',
+    model: 'test-model',
+    maxRetries: 0,
+    fetch: async () => sseEvents([
+      {
+        type: 'response.reasoning_text.delta',
+        sequence_number: 0,
+        output_index: 0,
+        content_index: 0,
+        item_id: 'reasoning-1',
+        delta: 'think ',
+      },
+      {
+        type: 'response.output_text.delta',
+        sequence_number: 1,
+        output_index: 1,
+        content_index: 0,
+        item_id: 'message-streamed',
+        logprobs: [],
+        delta: 'ans',
+      },
+      {
+        type: 'response.output_text.delta',
+        sequence_number: 2,
+        output_index: 1,
+        content_index: 0,
+        item_id: 'message-streamed',
+        logprobs: [],
+        delta: 'wer',
+      },
+      { type: 'response.completed', sequence_number: 3, response: completed },
+    ]),
+  })
+
+  const output = await model.generate({
+    messages: [{ role: 'user', content: 'hello' }],
+    tools: [],
+    onStream: async event => {
+      deltas.push(structuredClone(event))
+      order.push(event.type)
+    },
+  })
+  order.push('resolved')
+
+  assert.deepEqual(deltas, [
+    { type: 'reasoning', delta: 'think ' },
+    { type: 'output-text', delta: 'ans' },
+    { type: 'output-text', delta: 'wer' },
+  ])
+  assert.deepEqual(order, ['reasoning', 'output-text', 'output-text', 'resolved'])
+  assert.equal(output.kind, 'final')
+  assert.equal(output.content, 'answer')
 })
 
 test('reports the underlying transport cause when an SSE request fails before headers', async () => {
