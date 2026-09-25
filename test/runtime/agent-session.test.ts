@@ -49,6 +49,231 @@ test('feeds a tool result back to the model before returning the final answer', 
   ])
 })
 
+test('keeps model-visible tools stable and executes discovered tools through ExecuteTool', async () => {
+  const visibleTools: string[][] = []
+  let invocation = 0
+  let emailCalls = 0
+  const sendEmail: Tool = {
+    effect: 'execute',
+    description: {
+      name: 'mcp__mail__send_email',
+      description: 'Send an email message to a recipient.',
+      parameters: { type: 'object' },
+    },
+    async execute() {
+      emailCalls += 1
+      return 'sent'
+    },
+  }
+  const model: Model = {
+    async generate(input) {
+      visibleTools.push(input.tools.map(tool => tool.name))
+      invocation += 1
+      if (invocation === 1) {
+        return {
+          kind: 'tool-calls',
+          calls: [{ id: 'search-mail', name: 'ToolSearch', arguments: { query: 'send email' } }],
+        }
+      }
+      if (invocation === 2) {
+        return {
+          kind: 'tool-calls',
+          calls: [{
+            id: 'send-mail',
+            name: 'ExecuteTool',
+            arguments: { tool_name: sendEmail.description.name, params: {} },
+          }],
+        }
+      }
+      return { kind: 'final', content: 'email sent' }
+    },
+  }
+
+  const answer = await runAgent({
+    model,
+    tools: [],
+    searchableTools: [sendEmail],
+    prompt: 'Send an email.',
+  })
+
+  assert.equal(answer, 'email sent')
+  assert.equal(emailCalls, 1)
+  assert.deepEqual(visibleTools, [
+    ['ToolSearch', 'ExecuteTool'],
+    ['ToolSearch', 'ExecuteTool'],
+    ['ToolSearch', 'ExecuteTool'],
+  ])
+})
+
+test('returns ExecuteTool contract errors to the model so it can correct params and continue', async () => {
+  let invocation = 0
+  let executions = 0
+  const sendEmail: Tool = {
+    effect: 'execute',
+    description: {
+      name: 'mcp__mail__send_email',
+      description: 'Send an email message to a recipient.',
+      parameters: {
+        type: 'object',
+        properties: { recipient: { type: 'string' } },
+        required: ['recipient'],
+        additionalProperties: false,
+      },
+    },
+    async execute(arguments_) {
+      executions += 1
+      assert.deepEqual(arguments_, { recipient: 'person@example.com' })
+      return 'sent'
+    },
+  }
+
+  const answer = await runAgent({
+    model: {
+      async generate(input) {
+        invocation += 1
+        if (invocation === 1) {
+          return {
+            kind: 'tool-calls',
+            calls: [{ id: 'search-mail', name: 'ToolSearch', arguments: { query: 'send email' } }],
+          }
+        }
+        if (invocation === 2) {
+          return {
+            kind: 'tool-calls',
+            calls: [{
+              id: 'invalid-send',
+              name: 'ExecuteTool',
+              arguments: { tool_name: sendEmail.description.name, params: {} },
+            }],
+          }
+        }
+        if (invocation === 3) {
+          const failedResult = input.messages.at(-1)
+          assert.equal(failedResult?.role, 'tool')
+          assert.match(
+            failedResult?.role === 'tool' ? failedResult.content : '',
+            /invalid parameters.*required property 'recipient'/i,
+          )
+          return {
+            kind: 'tool-calls',
+            calls: [{
+              id: 'corrected-send',
+              name: 'ExecuteTool',
+              arguments: {
+                tool_name: sendEmail.description.name,
+                params: { recipient: 'person@example.com' },
+              },
+            }],
+          }
+        }
+        assert.deepEqual(input.messages.at(-1), {
+          role: 'tool',
+          toolCallId: 'corrected-send',
+          content: 'sent',
+        })
+        return { kind: 'final', content: 'email sent after correction' }
+      },
+    },
+    tools: [],
+    searchableTools: [sendEmail],
+    prompt: 'Send an email.',
+  })
+
+  assert.equal(answer, 'email sent after correction')
+  assert.equal(invocation, 4)
+  assert.equal(executions, 1)
+})
+
+test('does not execute a searchable tool that the model guesses before discovery', async () => {
+  let invocation = 0
+  let executions = 0
+  const deferred: Tool = {
+    effect: 'execute',
+    description: {
+      name: 'mcp__mail__send_email',
+      description: 'Send an email message.',
+      parameters: { type: 'object' },
+    },
+    async execute() {
+      executions += 1
+      return 'sent'
+    },
+  }
+  const answer = await runAgent({
+    model: {
+      async generate(input) {
+        invocation += 1
+        if (invocation === 1) {
+          return {
+            kind: 'tool-calls',
+            calls: [{ id: 'guessed', name: deferred.description.name, arguments: {} }],
+          }
+        }
+        const result = input.messages.at(-1)
+        assert.match(result?.role === 'tool' ? result.content : '', /use ToolSearch, then ExecuteTool/)
+        return { kind: 'final', content: 'search required' }
+      },
+    },
+    tools: [],
+    searchableTools: [deferred],
+    prompt: 'Send an email.',
+  })
+
+  assert.equal(answer, 'search required')
+  assert.equal(executions, 0)
+})
+
+test('does not execute a guessed deferred tool through ExecuteTool in a Tool Search batch', async () => {
+  let invocation = 0
+  let executions = 0
+  const deferred: Tool = {
+    effect: 'execute',
+    description: {
+      name: 'mcp__mail__send_email',
+      description: 'Send an email message.',
+      parameters: { type: 'object' },
+    },
+    async execute() {
+      executions += 1
+      return 'sent'
+    },
+  }
+  const answer = await runAgent({
+    model: {
+      async generate(input) {
+        invocation += 1
+        if (invocation === 1) {
+          return {
+            kind: 'tool-calls',
+            calls: [
+              { id: 'search', name: 'ToolSearch', arguments: { query: 'send email' } },
+              {
+                id: 'guessed',
+                name: 'ExecuteTool',
+                arguments: { tool_name: deferred.description.name, params: {} },
+              },
+            ],
+          }
+        }
+        const results = input.messages.filter(message => message.role === 'tool')
+        assert.equal(results.length, 2)
+        assert.match(results[1]?.content ?? '', /earlier model step/)
+        assert.deepEqual(input.tools.map(tool => tool.name), [
+          'ToolSearch',
+          'ExecuteTool',
+        ])
+        return { kind: 'final', content: 'retry on a later step' }
+      },
+    },
+    tools: [],
+    searchableTools: [deferred],
+    prompt: 'Send an email.',
+  })
+
+  assert.equal(answer, 'retry on a later step')
+  assert.equal(executions, 0)
+})
+
 test('emits an observable execution chain with provider reasoning and tool content', async () => {
   const events: AgentEvent[] = []
   let request = 0
@@ -643,6 +868,70 @@ test('restores completed turns from durable session state', async () => {
     { role: 'assistant', content: '记住了' },
     { role: 'user', content: '暗号是什么？' },
   ])
+})
+
+test('restores Tool Search discoveries for ExecuteTool when reopening a session', async () => {
+  const store = new MemorySessionStore()
+  const deferred: Tool = {
+    effect: 'observe',
+    description: {
+      name: 'mcp__calendar__list_events',
+      description: 'List calendar events.',
+      parameters: { type: 'object' },
+    },
+    async execute() {
+      return 'events'
+    },
+  }
+  let invocation = 0
+  const first = await AgentSession.create({
+    model: {
+      async generate() {
+        invocation += 1
+        return invocation === 1
+          ? {
+              kind: 'tool-calls',
+              calls: [{ id: 'find-calendar', name: 'ToolSearch', arguments: { query: 'calendar' } }],
+            }
+          : { kind: 'final', content: 'calendar ready' }
+      },
+    },
+    tools: [],
+    searchableTools: [deferred],
+    store,
+  })
+  await first.send('Find a calendar tool.')
+
+  const resumed = await AgentSession.resume(first.id, {
+    model: {
+      async generate(input) {
+        assert.deepEqual(input.tools.map(tool => tool.name), [
+          'ToolSearch',
+          'ExecuteTool',
+        ])
+        const priorExecute = input.messages.some(message =>
+          message.role === 'assistant'
+          && 'toolCalls' in message
+          && message.toolCalls.some(call => call.name === 'ExecuteTool')
+        )
+        return priorExecute
+          ? { kind: 'final', content: 'still available' }
+          : {
+              kind: 'tool-calls',
+              calls: [{
+                id: 'list-calendar',
+                name: 'ExecuteTool',
+                arguments: { tool_name: deferred.description.name, params: {} },
+              }],
+            }
+      },
+    },
+    tools: [],
+    searchableTools: [deferred],
+    store,
+  })
+
+  assert.equal(await resumed.send('Use it again.'), 'still available')
 })
 
 test('restores completed Steps from a failed Turn and continues after reconnecting', async () => {

@@ -54,9 +54,15 @@ CLI 在 Scoped 模式暴露六个代码工具：
 
 ## MCP Tools
 
-CLI 可以把 MCP Server 的工具发现并适配到同一个 Runtime Tool registry。当前支持 stdio、Streamable HTTP 和显式 legacy SSE transport；兼容 portable `.mcp.json` 的 `mcpServers`，也兼容 VS Code `mcp.json` 的 `servers`。MCP 必须通过 `--mcp-config` 或 `AGENT_MCP_CONFIG` 显式启用，CLI 不会因为 Project 内存在 `.mcp.json` 就自动执行其中的本地命令。
+CLI 可以把 MCP Server 的工具发现并适配到同一个 Runtime Tool Registry。当前支持 stdio、Streamable HTTP 和显式 legacy SSE transport；兼容 portable `.mcp.json` 的 `mcpServers`，也兼容 VS Code `mcp.json` 的 `servers`。MCP 必须通过 `--mcp-config` 或 `AGENT_MCP_CONFIG` 显式启用，CLI 不会因为 Project 内存在 `.mcp.json` 就自动执行其中的本地命令。
 
-模型看到的名称是 `mcp__<server>__<tool>`。MCP 输入 JSON Schema 会直接成为模型可见参数；纯文本结果直接返回文本，包含 structured content、图片、音频或资源的结果保留为 JSON。`isError`、协议错误、transport 错误和超时都会作为失败 Tool Result 持久化并反馈给模型。CLI 退出时会终止远程 session，并关闭全部 client 和 stdio 子进程。
+内置代码工具始终直接暴露给模型；MCP 工具完成启动时发现后作为 Searchable Tools 留在 Runtime Catalog 中，模型只额外看到常驻的 `ToolSearch` 和 `ExecuteTool`。模型先搜索，再在后续 Step 用 `ExecuteTool` 的 `tool_name` 和 `params` 调用命中工具。真实 MCP 工具不会加入 Model Invocation 的 `tools` 字段，因此整个 Session 的模型可见工具列表保持稳定。即使模型猜中 MCP 工具名或在搜索的同一批次尝试执行，也不能绕过发现门禁；发现状态会在后续 Turn 中保留，并可从已持久化的 Tool Result 重建。
+
+`ToolSearch` 使用与 CCB keyword search 同类的人工权重：Tool 名称精确词段、部分词段和名称回退分别加 12、6、3 分，参数名称精确和部分命中加 4、2 分，Tool 描述和参数描述命中加 2、1 分；同分时保持注册顺序。索引只包含 Tool 名称、Tool 描述、参数名称和参数描述，不用参数类型、枚举、默认值或其余 JSON Schema 内容参与检索。英文按单词切分并识别 camelCase，中文额外生成二元词组；`+term` 要求候选必须命中该词，`select:<exact_tool_name>` 直接选择已知名称。
+
+`ToolSearch` 只接收 `query` 并固定返回最多五个结果；输出 JSON 同时包含精确工具名数组 `matches` 和每个候选的 `name`、`description`、`input_schema`。参数契约只出现在 Tool Result 中，不会动态修改后续请求的 `tools` 字段。`ExecuteTool` 只允许执行更早 Step 已搜索命中的名称，并在调用真实适配器前用 MCP SDK 的 JSON Schema Validator 校验 `params`。校验失败只阻止当前底层调用：错误作为失败 Tool Result 返回模型，Agent Loop 继续，模型可以按契约修正参数后再次执行。它不发起额外模型请求、不使用向量数据库，也不重新连接 MCP Server。没有配置 MCP 或 Server 未发现工具时，这两个常驻工具都不会暴露。
+
+搜索返回的名称是 `mcp__<server>__<tool>`。只有通过目标 JSON Schema 的 `ExecuteTool.params` 才会交给对应 MCP Tool；MCP Server 仍保留最终的业务校验权。纯文本结果直接返回文本，包含 structured content、图片、音频或资源的结果保留为 JSON。`isError`、参数校验错误、协议错误、transport 错误和超时都会作为失败 Tool Result 持久化并反馈给模型，而不是直接结束 Agent Loop。CLI 退出时会终止远程 session，并关闭全部 client 和 stdio 子进程。
 
 示例 portable 配置：
 

@@ -34,6 +34,22 @@ _Avoid_: Agent、Provider
 Agent 可调用的一项具名能力，包含模型可见的参数说明和 Runtime 可执行的行为。
 _Avoid_: Tool Call、Action
 
+**Tool Registry**:
+Session 内持有完整可执行 Tool Catalog、固定的模型可见工具集和 Tool Search 发现状态的 Runtime Module。它通过 Execute Tool 调度已发现的 Searchable Tool，并从持久化 Tool Result 恢复发现状态。
+_Avoid_: MCP Tool Set、Model Tool List
+
+**Tool Search**:
+模型可见的常驻 Tool，通过显式人工权重按 Tool 名称、Tool 描述、参数名称和参数描述搜索 Searchable Tools，固定返回最多五个候选及其参数 Schema。支持 `+term` 必选词和 `select:<exact_tool_name>` 精确选择；参数类型、枚举、默认值或其他 Schema 内容只随结果作为参数契约返回，不参与检索评分。
+_Avoid_: MCP Discovery、Web Search、BM25 Tool Search、Regex Tool Search
+
+**Execute Tool**:
+模型可见的常驻 Tool，通过精确工具名和参数对象调用已经在更早 Step 被 Tool Search 命中的 Searchable Tool。Runtime 在调度真实适配器前按搜索结果中的 JSON Schema 校验参数；失败结果反馈给模型继续修正，不终止 Agent Loop。
+_Avoid_: Direct Tool Call、Tool Runner
+
+**Searchable Tool**:
+已经存在于 Tool Registry 的可执行目录、但不会加入模型 `tools` 列表的 Tool。模型必须先搜索取得候选描述与参数契约，再在后续 Step 通过 Execute Tool 调用；发现状态在当前 Session 的后续 Steps、Turns 和恢复流程中保留。
+_Avoid_: Unavailable Tool、Undiscovered MCP Tool
+
 **Tool Call**:
 模型在一个 Step 中选择 Tool 并给出参数的一次执行请求。
 _Avoid_: Tool、Action
@@ -51,7 +67,7 @@ _Avoid_: Multi-Step、Read Many
 _Avoid_: Model Provider、Runtime Tool
 
 **MCP Tool Set**:
-CLI 启动时从所有已配置 MCP Servers 完成握手和工具发现后得到的进程级 Tool 集合。它把远程工具适配到 Runtime Tool interface，并统一拥有连接关闭生命周期；运行中的 Agent Session 使用该集合的静态快照。
+CLI 启动时从所有已配置 MCP Servers 完成握手和工具发现后得到的进程级 Tool 集合。它把远程工具适配到 Runtime Tool interface，并统一拥有连接关闭生命周期；运行中的 Agent Session 使用该集合的静态快照作为 Searchable Tools。
 _Avoid_: Provider-hosted Tool、Dynamic Tool Registry
 
 **MCP Tool**:

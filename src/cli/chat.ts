@@ -44,7 +44,6 @@ try {
       workspaceFolder: primaryRoot(project).path,
     })
   }
-  const tools = [...codeTools, ...(mcpToolSet?.tools ?? [])]
   const traceMode = agentTraceModeFromEnvironment()
   const traceMaxResultChars = agentTraceMaxResultCharsFromEnvironment()
   const loopGuardThresholds = agentLoopGuardThresholdsFromEnvironment()
@@ -82,7 +81,8 @@ try {
       new ModelRepeatLoopGuard(loopGuardModel, { thresholds: loopGuardThresholds }),
       new NoProgressLoopGuard({ thresholds: noProgressThresholds }),
     ],
-    tools,
+    tools: codeTools,
+    searchableTools: mcpToolSet?.tools ?? [],
     store,
     project,
     accessMode: target.accessMode,
@@ -110,7 +110,7 @@ try {
   console.log(
     `MCP: ${mcpToolSet === undefined
       ? 'disabled'
-      : `${mcpToolSet.servers.length} server(s) · ${mcpToolSet.tools.length} tool(s) · ${mcpToolSet.configPath}`}`,
+      : `${mcpToolSet.servers.length} server(s) · ${mcpToolSet.tools.length} searchable tool(s) · ${mcpToolSet.configPath}`}`,
   )
   console.log(
     `Trace: ${traceMode} · Ctrl+O toggles compact/verbose · Tool Result preview: ${traceMaxResultChars} chars`,

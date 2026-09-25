@@ -12,6 +12,7 @@ import {
 } from './session-store.ts'
 import type { Message, Model, ModelAttemptEvent, ModelOutput, Tool, ToolCall } from './types.ts'
 import { ModelContinuationUnavailableError } from './model-errors.ts'
+import { ToolRegistry } from './tool-registry.ts'
 import {
   type LoopGuard,
   type LoopGuardReminder,
@@ -24,6 +25,7 @@ const INTERRUPTED_TOOL_ERROR = 'Error: execution stopped before this Tool result
 export interface AgentSessionOptions {
   model: Model
   tools: readonly Tool[]
+  searchableTools?: readonly Tool[]
   store: SessionStore
   project?: AgentProject
   accessMode?: FilesystemAccessMode
@@ -92,8 +94,7 @@ export type AgentEvent =
 /** Owns one durable conversation and executes one turn at a time. */
 export class AgentSession {
   private readonly messages: Message[]
-  private readonly toolsByName = new Map<string, Tool>()
-  private readonly toolDescriptions: Tool['description'][]
+  private readonly toolRegistry: ToolRegistry
   private readonly maxTokens: number | undefined
   private providerContinuation: { responseId: string; syncedMessageCount: number } | undefined
   private recoverableTurnId: string | undefined
@@ -117,12 +118,11 @@ export class AgentSession {
       throw new Error('maxTokens must be a positive safe integer')
     }
 
-    for (const tool of options.tools) {
-      const { name } = tool.description
-      if (this.toolsByName.has(name)) throw new Error(`Duplicate tool name: ${name}`)
-      this.toolsByName.set(name, tool)
-    }
-    this.toolDescriptions = options.tools.map(tool => tool.description)
+    this.toolRegistry = new ToolRegistry({
+      tools: options.tools,
+      ...(options.searchableTools === undefined ? {} : { searchableTools: options.searchableTools }),
+    })
+    this.toolRegistry.restore(this.messages)
   }
 
   /** Creates and persists a new conversation. */
@@ -253,7 +253,7 @@ export class AgentSession {
     completedReminders: readonly AgentLoopGuardReminder[],
   ): Promise<string> {
     const reminders = [...completedReminders]
-    const guardSteps = loopGuardSteps(completedSteps, this.toolsByName)
+    const guardSteps = loopGuardSteps(completedSteps, this.toolRegistry)
 
     const reviewIfDue = async (afterStep: number): Promise<void> => {
       for (const loopGuard of this.options.loopGuards ?? []) {
@@ -294,7 +294,7 @@ export class AgentSession {
 
     await reviewIfDue(firstStep - 1)
     for (let step = firstStep; ; step += 1) {
-      const tools = this.toolDescriptions
+      const tools = this.toolRegistry.descriptions()
       const initialMessages = this.requestMessages()
       this.emit({
         type: 'step.started',
@@ -434,7 +434,7 @@ export class AgentSession {
           arguments: structuredClone(execution.call.arguments),
           result: execution.content,
           failed: execution.failed,
-          effect: this.toolsByName.get(execution.call.name)?.effect ?? 'execute',
+          effect: this.toolRegistry.effectForCall(execution.call),
         })),
       })
       await reviewIfDue(step)
@@ -464,6 +464,7 @@ export class AgentSession {
   private replaceModelState(state: ReturnType<typeof projectModelState>): void {
     this.messages.splice(0, this.messages.length, ...structuredClone(state.messages))
     this.providerContinuation = state.continuation
+    this.toolRegistry.restore(this.messages)
   }
 
   private requestMessages(): readonly Message[] {
@@ -494,9 +495,10 @@ export class AgentSession {
     step: number,
     calls: readonly ToolCall[],
   ): Promise<readonly ToolExecutionResult[]> {
-    const parallel = calls.every(
-      call => this.toolsByName.get(call.name)?.parallelSafe === true,
-    )
+    // Resolve against one snapshot and publish Tool Search discoveries only after the
+    // whole batch, so ExecuteTool cannot use same-step search results.
+    const tools = calls.map(call => this.toolRegistry.get(call.name))
+    const parallel = tools.every(tool => tool?.parallelSafe === true)
     this.emit({
       type: 'tool.batch-started',
       turnId,
@@ -504,39 +506,53 @@ export class AgentSession {
       mode: parallel ? 'parallel' : 'serial',
       count: calls.length,
     })
-    if (parallel) {
-      const settled = await Promise.allSettled(
-        calls.map(call => this.executeToolCall(turnId, step, call)),
-      )
-      const results: ToolExecutionResult[] = []
-      for (const result of settled) {
-        if (result.status === 'rejected') throw result.reason
-        results.push(result.value)
+    let publishDiscoveries = false
+    try {
+      if (parallel) {
+        const settled = await Promise.allSettled(
+          calls.map((call, index) => this.executeToolCall(turnId, step, call, tools[index])),
+        )
+        const results: ToolExecutionResult[] = []
+        for (const result of settled) {
+          if (result.status === 'rejected') throw result.reason
+          results.push(result.value)
+        }
+        publishDiscoveries = true
+        return results
       }
-      return results
-    }
 
-    const results: ToolExecutionResult[] = []
-    for (const call of calls) {
-      results.push(await this.executeToolCall(turnId, step, call))
+      const results: ToolExecutionResult[] = []
+      for (const [index, call] of calls.entries()) {
+        results.push(await this.executeToolCall(turnId, step, call, tools[index]))
+      }
+      publishDiscoveries = true
+      return results
+    } finally {
+      this.toolRegistry.finishToolCallBatch(publishDiscoveries)
     }
-    return results
   }
 
   private async executeToolCall(
     turnId: string,
     step: number,
     call: ToolCall,
+    tool: Tool | undefined,
   ): Promise<ToolExecutionResult> {
     const startedAt = performance.now()
     this.emit({ type: 'tool.started', turnId, step, call: structuredClone(call) })
-    const tool = this.toolsByName.get(call.name)
     if (!tool) {
+      const knownButDeferred = this.toolRegistry.catalogTool(call.name) !== undefined
       return await this.persistToolExecution(
         turnId,
         step,
         startedAt,
-        { call, failed: true, content: `Error: unknown tool "${call.name}"` },
+        {
+          call,
+          failed: true,
+          content: knownButDeferred
+            ? `Error: tool "${call.name}" is deferred; use ToolSearch, then ExecuteTool`
+            : `Error: unknown tool "${call.name}"`,
+        },
       )
     }
     let execution: ToolExecutionResult
@@ -608,6 +624,7 @@ export class AgentSession {
 export async function runAgent({
   model,
   tools,
+  searchableTools,
   prompt,
   maxTokens,
   loopGuards,
@@ -616,6 +633,7 @@ export async function runAgent({
   const session = await AgentSession.create({
     model,
     tools,
+    ...(searchableTools === undefined ? {} : { searchableTools }),
     store: new MemorySessionStore(),
     ...(maxTokens === undefined ? {} : { maxTokens }),
     ...(loopGuards === undefined ? {} : { loopGuards }),
@@ -639,7 +657,7 @@ function nextStepNumber(turn: AgentTurn): number {
 
 function loopGuardSteps(
   steps: readonly AgentStep[],
-  toolsByName: ReadonlyMap<string, Tool>,
+  toolRegistry: ToolRegistry,
 ): LoopGuardStep[] {
   return steps.flatMap(step => {
     if (
@@ -655,7 +673,7 @@ function loopGuardSteps(
         arguments: structuredClone(execution.call.arguments),
         result,
         failed: execution.status === 'failed',
-        effect: toolsByName.get(execution.call.name)?.effect ?? 'execute',
+        effect: toolRegistry.effectForCall(execution.call),
       }]
     })
     return calls.length === 0 ? [] : [{ stepNumber: step.stepNumber, calls }]

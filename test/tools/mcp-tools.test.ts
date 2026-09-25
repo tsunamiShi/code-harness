@@ -59,10 +59,42 @@ test('connects a stdio server, discovers tools, calls them, and closes idempoten
     async generate(input) {
       modelInvocation += 1
       if (modelInvocation === 1) {
-        assert.ok(input.tools.some(tool => tool.name === 'mcp__fixture__echo'))
+        assert.deepEqual(input.tools.map(tool => tool.name), [
+          'ToolSearch',
+          'ExecuteTool',
+        ])
         return {
           kind: 'tool-calls',
-          calls: [{ id: 'mcp-call-1', name: 'mcp__fixture__echo', arguments: { text: 'agent' } }],
+          calls: [{
+            id: 'search-call',
+            name: 'ToolSearch',
+            arguments: { query: 'fixture echo' },
+          }],
+        }
+      }
+      if (modelInvocation === 2) {
+        assert.deepEqual(input.tools.map(tool => tool.name), [
+          'ToolSearch',
+          'ExecuteTool',
+        ])
+        const searchResult = input.messages.at(-1)
+        assert.equal(searchResult?.role, 'tool')
+        assert.equal(
+          searchResult?.role === 'tool'
+            ? JSON.parse(searchResult.content).matches[0]
+            : undefined,
+          'mcp__fixture__echo',
+        )
+        return {
+          kind: 'tool-calls',
+          calls: [{
+            id: 'mcp-call-1',
+            name: 'ExecuteTool',
+            arguments: {
+              tool_name: 'mcp__fixture__echo',
+              params: { text: 'agent' },
+            },
+          }],
         }
       }
       assert.deepEqual(input.messages.at(-1), {
@@ -75,7 +107,8 @@ test('connects a stdio server, discovers tools, calls them, and closes idempoten
   }
   const session = await AgentSession.create({
     model,
-    tools: toolSet.tools,
+    tools: [],
+    searchableTools: toolSet.tools,
     store: new MemorySessionStore(),
   })
   assert.equal(await session.send('Use the MCP echo tool'), 'MCP completed')
