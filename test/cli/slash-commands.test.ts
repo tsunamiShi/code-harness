@@ -13,6 +13,7 @@ test('completes slash command names and shows every command', () => {
   assert.deepEqual(completeSlashCommand('hello'), [[], 'hello'])
   assert.match(slashCommandHelp(), /\/resume/)
   assert.match(slashCommandHelp(), /\/retry/)
+  assert.match(slashCommandHelp(), /\/compact/)
   assert.match(slashCommandHelp(), /\/help/)
   assert.match(slashCommandHelp(), /\/exit/)
 })

@@ -1,4 +1,5 @@
 import type { MysqlAgentStoreOptions } from '../storage/mysql-agent-store.ts'
+import type { ContextLimits } from '../runtime/context-manager.ts'
 
 export type AgentTraceMode = 'compact' | 'verbose'
 
@@ -31,6 +32,36 @@ export function agentMaxTokensFromEnvironment(): number | undefined {
     throw new Error(`Invalid AGENT_MAX_TOKENS: ${value}`)
   }
   return maxTokens
+}
+
+export function agentContextLimitsFromEnvironment(): ContextLimits | undefined {
+  const contextWindowTokens = readOptionalPositiveInteger(
+    process.env.AGENT_CONTEXT_WINDOW_TOKENS,
+    'AGENT_CONTEXT_WINDOW_TOKENS',
+  )
+  const configuredLimit = readOptionalPositiveInteger(
+    process.env.AGENT_AUTO_COMPACT_TOKEN_LIMIT,
+    'AGENT_AUTO_COMPACT_TOKEN_LIMIT',
+  )
+  if (contextWindowTokens === undefined && configuredLimit === undefined) return undefined
+
+  const maximum = contextWindowTokens === undefined
+    ? undefined
+    : Math.floor(contextWindowTokens * 0.9)
+  if (maximum !== undefined && maximum < 1) {
+    throw new Error(`Invalid AGENT_CONTEXT_WINDOW_TOKENS: ${contextWindowTokens}`)
+  }
+  if (configuredLimit !== undefined && maximum !== undefined && configuredLimit > maximum) {
+    throw new Error(
+      `Invalid AGENT_AUTO_COMPACT_TOKEN_LIMIT: ${configuredLimit} exceeds 90% of AGENT_CONTEXT_WINDOW_TOKENS`,
+    )
+  }
+  return {
+    ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
+    ...(configuredLimit === undefined
+      ? maximum === undefined ? {} : { autoCompactTokenLimit: maximum }
+      : { autoCompactTokenLimit: configuredLimit }),
+  }
 }
 
 export function agentMcpConfigPathFromEnvironment(cliValue?: string): string | undefined {
@@ -92,4 +123,11 @@ function readPort(value: string): number {
     throw new Error(`Invalid MYSQL_PORT: ${value}`)
   }
   return port
+}
+
+function readOptionalPositiveInteger(value: string | undefined, name: string): number | undefined {
+  if (value === undefined) return undefined
+  const number = Number(value)
+  if (!Number.isSafeInteger(number) || number < 1) throw new Error(`Invalid ${name}: ${value}`)
+  return number
 }

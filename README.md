@@ -1,6 +1,6 @@
 # AI Agent
 
-这是一个从最小 Agent Loop 演进为可部署 Code Agent 的 TypeScript 项目。当前版本支持真实模型、内置与 MCP 工具调用、多轮对话、Multi-root Project、受 Project Root 约束的代码探索和精确文件修改，以及 MySQL 持久化和恢复。
+这是一个从最小 Agent Loop 演进为可部署 Code Agent 的 TypeScript 项目。当前版本支持真实模型、内置与 MCP 工具调用、多轮对话、Multi-root Project、受 Project Root 约束的代码探索和精确文件修改，以及 MySQL 持久化、恢复和长对话上下文压缩。
 
 ## 当前运行模型
 
@@ -13,7 +13,7 @@ Project
             └─ Step（一次模型推理，以及可选的一组工具执行）
 ```
 
-`ProjectCatalog` 管理本地目录选择，`AgentSession` 控制 Agent Loop，`Model` 适配模型供应商，`Tool` 暴露外部能力，存储接口隔离持久化实现。正式 CLI 使用 `MysqlAgentStore`；一次性调用和单元测试可使用内存 Adapter。
+`ProjectCatalog` 管理本地目录选择，`AgentSession` 控制 Agent Loop，`ContextManager` 维护模型上下文预算和 checkpoint，`Model` 适配模型供应商，`Tool` 暴露外部能力，存储接口隔离持久化实现。正式 CLI 使用 `MysqlAgentStore`；一次性调用和单元测试可使用内存 Adapter。
 
 数据库保留完成和失败的 Turn/Step，并单独记录每次 Model Invocation 及其 Provider Attempts。发送给模型的 `messages` 来自已完成 Turn，以及最后一个可恢复 Turn 中已经持久化的 Steps；遥测记录不会进入模型上下文。
 
@@ -100,6 +100,19 @@ Loop Guard 在每个完成的 Tool Step 后运行两个可组合 Policy。精确
 
 Turn 中每个完成的 Tool Call 都会立即持久化。模型请求或进程异常后，Session 保留同一个 Turn 的用户输入、已完成 Tool Calls 和 Tool Results；使用 `--session` 重连时 CLI 自动继续该 Turn，失败后也可输入 `/retry` 再试。进程退出时仍处于 running 且结果尚未持久化的 Tool Call 不会被自动重放，因为 `Edit` 或 `Bash` 可能已经产生副作用；恢复过程会为它写入“结果未知”的 Tool Error，让模型检查当前状态后继续。
 
+## Context Checkpoints
+
+Runtime 会把完整执行历史与模型可见上下文分开保存。Context Compaction 只用一个持久化 Context Checkpoint 替换截至某个已完成 Step 的模型可见前缀；原始 Turn、Step、Tool Call、Tool Result、Loop Guard Reminder、Model Invocation 和 Provider Attempt 均不会被删除。Session 恢复、Provider continuation 丢失后的重放，以及进程重启都会使用同一份 `checkpoint replacement + durable tail` 投影。
+
+自动压缩默认关闭。配置 `AGENT_CONTEXT_WINDOW_TOKENS` 后，Runtime 默认在本地估算或最近 Provider `input_tokens` 达到上下文窗口的 90% 时，于下一次普通模型调用前压缩。也可以用 `AGENT_AUTO_COMPACT_TOKEN_LIMIT` 设置更低的正整数阈值；当同时配置上下文窗口时，该值不能超过窗口的 90%。例如：
+
+```dotenv
+AGENT_CONTEXT_WINDOW_TOKENS=131072
+AGENT_AUTO_COMPACT_TOKEN_LIMIT=117964
+```
+
+交互式 CLI 可输入 `/compact` 手动创建 checkpoint。它要求最新 checkpoint 之后至少存在一个已完成 Step；摘要请求使用同一个主模型，但不携带 Tools 或旧的 `previous_response_id`，并作为 `purpose=compaction` 的 Model Invocation 完整记录。安装成功后，下一次 Agent 请求启动新的 Provider chain。压缩请求只会对其输入中的超大 Tool Result 保留首尾约 10,000 tokens，数据库和正常 Agent 上下文中的原始 Tool Result 不受影响。
+
 ## 准备 MySQL
 
 创建本地数据库：
@@ -145,7 +158,7 @@ ai-agent help project create
 
 `ai-agent chat --help` 和 `ai-agent project create --help` 也会显示对应主题，帮助命令不会连接数据库或启动 Agent Runtime。
 
-进入对话后，输入 `/` 可以查看斜杠命令，输入 `/` 后按 Tab 可以补全。`/resume` 会列出当前 Project 最近使用的 Session；从某个目录直接运行 `ai-agent` 时，这个范围就是该目录所映射的 Project。选择序号后会在当前进程中切换 Session，如果目标 Session 有未完成 Turn，则沿用原有恢复流程继续执行。
+进入对话后，输入 `/` 可以查看斜杠命令，输入 `/` 后按 Tab 可以补全。`/resume` 会列出当前 Project 最近使用的 Session；从某个目录直接运行 `ai-agent` 时，这个范围就是该目录所映射的 Project。选择序号后会在当前进程中切换 Session，如果目标 Session 有未完成 Turn，则沿用原有恢复流程继续执行。`/compact` 会在安全的已完成 Step 边界手动创建 Context Checkpoint。
 
 也可以显式管理 Project。`--primary` 必须出现一次，`--root` 可以重复：
 
@@ -219,9 +232,10 @@ Reasoning Content 只来自供应商 Responses 输出中的 `reasoning` item（`
 - `agent_turns`：用户输入、顺序、完成/失败状态和错误。
 - `agent_steps`：每次成功模型决策及其最终输出或 Tool Call Batch。
 - `agent_tool_calls`：Step 内每个 Tool Call 的参数、状态、结果和错误。
-- `agent_model_invocations`：每个 Step 对应的逻辑模型调用，包括失败后未产生 Step 的调用。
+- `agent_model_invocations`：普通 Agent Step 与 Context Compaction 对应的逻辑模型调用，包括失败后未产生 Step 的调用。
 - `agent_model_attempts`：一次 Model Invocation 下每个实际供应商请求及 SDK 重试，包括 `requesting / headers-received / streaming / completed / failed` 状态、首包指标和底层错误原因。
 - `agent_loop_guard_reminders`：精确重复或连续无文件修改命中阈值后生成的弱提醒。
+- `agent_context_checkpoints`：不可变的模型上下文 replacement、已覆盖 Step 游标、触发原因和摘要 Model Invocation 引用。
 - `agent_schema_migrations`：已应用的数据库结构版本。
 
 ## Architecture decisions
@@ -253,6 +267,7 @@ Reasoning Content 只来自供应商 Responses 输出中的 `reasoning` item（`
 - [ADR-025: Responses stream and Provider Attempt milestones are durable](docs/decisions/025-stream-responses-and-persist-attempt-milestones.md)
 - [ADR-026: Console Trace toggles density at runtime](docs/decisions/026-console-trace-toggles-density-at-runtime.md)
 - [ADR-027: MCP Tools adapt into the Runtime registry](docs/decisions/027-mcp-tools-adapt-into-runtime-registry.md)
+- [ADR-031: Context checkpoints bound model-visible history](docs/decisions/031-context-checkpoints-bound-model-history.md)
 - [ADR-032: Global CLI defaults to the current directory](docs/decisions/032-global-cli-defaults-to-current-directory.md)
 - [ADR-033: Slash commands select Sessions within the current Project](docs/decisions/033-slash-commands-select-project-sessions.md)
 
@@ -267,5 +282,4 @@ Reasoning Content 只来自供应商 Responses 输出中的 `reasoning` item（`
 - MCP 当前只接入 Tools；Resources、Prompts、交互式 Elicitation、Sampling callback 和浏览器 OAuth 尚未接入。运行中 Server 的工具列表变化需要重启 CLI。
 - CLI 会恢复最终的 `running` 或 `failed` Turn，但尚未实现多进程租约，不能安全支持两个进程同时恢复同一 Session。
 - 工具副作用与结果入库不是一个原子事务；自动重试前需要幂等键或 outbox。
-- 长对话尚未加入上下文窗口预算、摘要和裁剪策略。
 - Execution Trace 尚未支持 JSON 日志、Trace ID 导出和持久化查询接口；模型调用遥测已经持久化到 MySQL。

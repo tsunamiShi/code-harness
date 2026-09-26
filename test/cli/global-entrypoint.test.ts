@@ -14,6 +14,8 @@ test('ai-agent help lists every supported command without starting the runtime',
   assert.match(result.stdout, /project list/)
   assert.match(result.stdout, /project show/)
   assert.match(result.stdout, /project attach/)
+  assert.match(result.stdout, /\/resume/)
+  assert.match(result.stdout, /\/compact/)
   assert.match(result.stdout, /help project create/)
 })
 
@@ -25,6 +27,8 @@ test('ai-agent help provides detailed chat and project command topics', () => {
   assert.equal(chat.status, 0)
   assert.match(chat.stdout, /current directory becomes the Project primary root/)
   assert.match(chat.stdout, /--mcp-config <path>/)
+  assert.match(chat.stdout, /\/resume/)
+  assert.match(chat.stdout, /\/compact/)
   assert.equal(create.status, 0)
   assert.match(create.stdout, /--primary <path>/)
   assert.match(create.stdout, /--root <path>/)

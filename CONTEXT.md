@@ -146,6 +146,18 @@ _Avoid_: Turn、Action
 提供给模型的上下文条目。Message 是已完成 Turn，以及最后一个可恢复 Turn 中已持久化 Steps 的投影，不等同于完整执行记录。
 _Avoid_: Event、Log
 
+**Model Context**:
+一次 Model Invocation 实际可见的 Project System Message、Messages 和 Tool Schemas。它可以由 Context Checkpoint 加后续持久化记录投影得到，不等同于 Session 的完整执行历史。
+_Avoid_: Execution History、Session
+
+**Context Checkpoint**:
+Session 级不可变持久化投影点，用版本化 replacement Messages 替换截至某个已完成 Step 的模型可见前缀，同时保留底层 Turns、Steps、Tool Calls 和 Model Invocations。
+_Avoid_: Summary、Snapshot、Deleted History
+
+**Context Compaction**:
+在安全的已完成 Step 边界生成并原子安装 Context Checkpoint 的 Runtime 过程。当前策略调用无 Tools、无 Provider continuation 的独立 Model Invocation 生成摘要，只缩减 Model Context，不删除执行历史。
+_Avoid_: Trace Compaction、History Deletion
+
 ### Observability
 
 **Model Invocation**:

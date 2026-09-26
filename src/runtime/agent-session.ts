@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { projectInstructions, type AgentProject, type FilesystemAccessMode } from '../projects/project.ts'
 import { MemorySessionStore } from '../storage/memory-session-store.ts'
 import {
+  projectDurableModelState,
   projectModelState,
   recoverableTurn,
   type AgentLoopGuardReminder,
@@ -20,6 +21,13 @@ import type {
   ToolCall,
 } from './types.ts'
 import { ModelContinuationUnavailableError } from './model-errors.ts'
+import {
+  ContextManager,
+  type ContextCompactionResult,
+  type ContextLimits,
+  type ContextManagerEvent,
+  type TokenEstimator,
+} from './context-manager.ts'
 import { ToolRegistry } from './tool-registry.ts'
 import {
   type LoopGuard,
@@ -29,6 +37,7 @@ import {
 } from './loop-guard.ts'
 
 const INTERRUPTED_TOOL_ERROR = 'Error: execution stopped before this Tool result was persisted; the Tool was not run again because its side effects are unknown'
+const INTERRUPTED_COMPACTION_ERROR = 'Context compaction was interrupted before a checkpoint was installed'
 
 export interface AgentSessionOptions {
   model: Model
@@ -38,6 +47,8 @@ export interface AgentSessionOptions {
   project?: AgentProject
   accessMode?: FilesystemAccessMode
   maxTokens?: number
+  contextLimits?: ContextLimits
+  tokenEstimator?: TokenEstimator
   loopGuards?: readonly LoopGuard[]
   onEvent?: (event: AgentEvent) => void
 }
@@ -104,11 +115,13 @@ export type AgentEvent =
     }
   | { type: 'turn.completed'; turnId: string; steps: number; durationMs: number }
   | { type: 'turn.failed'; turnId: string; durationMs: number; error: string }
+  | ContextManagerEvent
 
 /** Owns one durable conversation and executes one turn at a time. */
 export class AgentSession {
   private readonly messages: Message[]
   private readonly toolRegistry: ToolRegistry
+  private readonly contextManager: ContextManager
   private readonly maxTokens: number | undefined
   private providerContinuation: { responseId: string; syncedMessageCount: number } | undefined
   private recoverableTurnId: string | undefined
@@ -120,6 +133,7 @@ export class AgentSession {
     messages: readonly Message[],
     providerContinuation?: { responseId: string; syncedMessageCount: number },
     recoverableTurnId?: string,
+    registryMessages: readonly Message[] = messages,
   ) {
     this.messages = [...structuredClone(messages)]
     this.providerContinuation = providerContinuation
@@ -136,7 +150,20 @@ export class AgentSession {
       tools: options.tools,
       ...(options.searchableTools === undefined ? {} : { searchableTools: options.searchableTools }),
     })
-    this.toolRegistry.restore(this.messages)
+    this.toolRegistry.restore(registryMessages)
+    const projectSystemMessage = this.projectSystemMessage()
+    this.contextManager = new ContextManager({
+      store: options.store,
+      ...(options.contextLimits === undefined ? {} : { limits: options.contextLimits }),
+      ...(options.tokenEstimator === undefined ? {} : { tokenEstimator: options.tokenEstimator }),
+      ...(projectSystemMessage === undefined ? {} : { projectSystemMessage }),
+      summarize: async input => (await this.invokeObservedModel({
+        ...input,
+        purpose: 'compaction',
+        tools: [],
+      })).output,
+      onEvent: event => this.emit(event),
+    })
   }
 
   /** Creates and persists a new conversation. */
@@ -152,14 +179,20 @@ export class AgentSession {
     if (snapshot.projectId !== (options.project?.id ?? null)) {
       throw new Error(`Session ${sessionId} does not belong to the supplied project`)
     }
+    await options.store.recoverInterruptedCompactions?.(
+      sessionId,
+      INTERRUPTED_COMPACTION_ERROR,
+    )
     const unfinished = recoverableTurn(snapshot)
     const state = projectModelState(snapshot)
+    const durableState = projectDurableModelState(snapshot)
     return new AgentSession(
       sessionId,
       options,
       state.messages,
       state.continuation,
       unfinished?.id,
+      durableState.messages,
     )
   }
 
@@ -219,7 +252,10 @@ export class AgentSession {
       const snapshot = await this.requireSnapshot()
       const turn = snapshot.turns.find(candidate => candidate.id === turnId)
       if (!turn || turn.status !== 'running') throw new Error(`Turn ${turnId} was not recovered`)
-      this.replaceModelState(projectModelState(snapshot))
+      this.replaceModelState(
+        projectModelState(snapshot),
+        projectDurableModelState(snapshot).messages,
+      )
 
       const final = completedFinal(turn)
       if (final !== undefined) {
@@ -256,6 +292,25 @@ export class AgentSession {
   /** Returns a detached snapshot of completed and recoverable model context. */
   history(): readonly Message[] {
     return structuredClone(this.messages)
+  }
+
+  /** Installs one durable summary checkpoint between Turns. */
+  async compact(): Promise<ContextCompactionResult> {
+    if (this.running) throw new Error('AgentSession already has a running turn')
+    if (this.recoverableTurnId !== undefined) {
+      throw new Error(`Session has unfinished turn ${this.recoverableTurnId}; continue it first`)
+    }
+    this.running = true
+    try {
+      const result = await this.contextManager.compactManually({
+        sessionId: this.id,
+        tools: this.toolRegistry.descriptions(),
+      })
+      this.replaceProjectedModelState(result.state)
+      return result
+    } finally {
+      this.running = false
+    }
   }
 
   private async runTurn(
@@ -309,6 +364,19 @@ export class AgentSession {
     await reviewIfDue(firstStep - 1)
     for (let step = firstStep; ; step += 1) {
       const tools = this.toolRegistry.descriptions()
+      const preparedState = await this.contextManager.prepareForInvocation({
+        sessionId: this.id,
+        turnId,
+        step,
+        state: {
+          messages: this.messages,
+          ...(this.providerContinuation === undefined
+            ? {}
+            : { continuation: this.providerContinuation }),
+        },
+        tools,
+      })
+      this.replaceProjectedModelState(preparedState)
       const initialMessages = this.requestMessages()
       this.emit({
         type: 'step.started',
@@ -318,62 +386,25 @@ export class AgentSession {
         toolCount: tools.length,
       })
       let output: ModelOutput
-      let modelStartedAt = performance.now()
+      let modelDurationMs = 0
       let replayedUnavailableContinuation = false
       while (true) {
         const messages = this.requestMessages()
         const continuation = this.providerContinuation
-        await this.options.store.record(this.id, {
-          type: 'model.invocation-started',
-          turnId,
-          step,
-          ...(this.options.model.descriptor === undefined
-            ? {}
-            : { descriptor: this.options.model.descriptor }),
-          messageCount: messages.length,
-          toolCount: tools.length,
-          inputChars: JSON.stringify({
-            messages,
-            tools,
-            previousResponseId: continuation?.responseId,
-          }).length,
-          ...(this.maxTokens === undefined ? {} : { maxTokens: this.maxTokens }),
-        })
-        modelStartedAt = performance.now()
         try {
-          output = await this.options.model.generate({
+          const invocation = await this.invokeObservedModel({
+            purpose: 'agent',
+            turnId,
+            step,
             messages,
             tools,
-            ...(this.maxTokens === undefined ? {} : { maxTokens: this.maxTokens }),
             ...(continuation === undefined
               ? {}
               : { previousResponseId: continuation.responseId }),
-            onAttempt: async event => {
-              await this.options.store.record(this.id, {
-                type: 'model.attempt',
-                turnId,
-                step,
-                event,
-              })
-              this.emit({ type: 'model.attempt', turnId, step, event })
-            },
-            onStream: async event => {
-              this.emit({
-                type: 'model.delta',
-                turnId,
-                step,
-                event: structuredClone(event),
-              })
-            },
           })
+          output = invocation.output
+          modelDurationMs = invocation.durationMs
         } catch (error: unknown) {
-          await this.options.store.record(this.id, {
-            type: 'model.invocation-failed',
-            turnId,
-            step,
-            errorName: errorName(error),
-            error: errorMessage(error),
-          })
           if (
             continuation !== undefined
             && !replayedUnavailableContinuation
@@ -387,21 +418,11 @@ export class AgentSession {
         }
         break
       }
-      await this.options.store.record(this.id, {
-        type: 'model.invocation-completed',
-        turnId,
-        step,
-        outputKind: output.kind,
-        outputChars: modelOutputChars(output),
-        reasoningChars: output.reasoningContent?.length ?? 0,
-        toolCallCount: output.kind === 'tool-calls' ? output.calls.length : 0,
-        ...(output.metadata === undefined ? {} : { metadata: output.metadata }),
-      })
       this.emit({
         type: 'model.completed',
         turnId,
         step,
-        durationMs: performance.now() - modelStartedAt,
+        durationMs: modelDurationMs,
         output: structuredClone(output),
       })
 
@@ -477,16 +498,111 @@ export class AgentSession {
     })
   }
 
+  private async invokeObservedModel(input: {
+    purpose: 'agent' | 'compaction'
+    turnId: string
+    step: number
+    messages: readonly Message[]
+    tools: readonly Tool['description'][]
+    previousResponseId?: string
+  }): Promise<{ output: ModelOutput; durationMs: number }> {
+    await this.options.store.record(this.id, {
+      type: 'model.invocation-started',
+      turnId: input.turnId,
+      step: input.step,
+      purpose: input.purpose,
+      ...(this.options.model.descriptor === undefined
+        ? {}
+        : { descriptor: this.options.model.descriptor }),
+      messageCount: input.messages.length,
+      toolCount: input.tools.length,
+      inputChars: JSON.stringify({
+        messages: input.messages,
+        tools: input.tools,
+        previousResponseId: input.previousResponseId,
+      }).length,
+      ...(this.maxTokens === undefined ? {} : { maxTokens: this.maxTokens }),
+    })
+    const startedAt = performance.now()
+    let output: ModelOutput
+    let durationMs: number
+    try {
+      output = await this.options.model.generate({
+        messages: input.messages,
+        tools: input.tools,
+        ...(this.maxTokens === undefined ? {} : { maxTokens: this.maxTokens }),
+        ...(input.previousResponseId === undefined
+          ? {}
+          : { previousResponseId: input.previousResponseId }),
+        onAttempt: async event => {
+          await this.options.store.record(this.id, {
+            type: 'model.attempt',
+            turnId: input.turnId,
+            step: input.step,
+            event,
+          })
+          this.emit({
+            type: 'model.attempt',
+            turnId: input.turnId,
+            step: input.step,
+            event: structuredClone(event),
+          })
+        },
+        ...(input.purpose === 'compaction'
+          ? {}
+          : {
+              onStream: async (event: ModelStreamEvent) => {
+                this.emit({
+                  type: 'model.delta',
+                  turnId: input.turnId,
+                  step: input.step,
+                  event: structuredClone(event),
+                })
+              },
+            }),
+      })
+      durationMs = performance.now() - startedAt
+    } catch (error: unknown) {
+      await this.options.store.record(this.id, {
+        type: 'model.invocation-failed',
+        turnId: input.turnId,
+        step: input.step,
+        errorName: errorName(error),
+        error: errorMessage(error),
+      })
+      throw error
+    }
+    await this.options.store.record(this.id, {
+      type: 'model.invocation-completed',
+      turnId: input.turnId,
+      step: input.step,
+      outputKind: output.kind,
+      outputChars: modelOutputChars(output),
+      reasoningChars: output.reasoningContent?.length ?? 0,
+      toolCallCount: output.kind === 'tool-calls' ? output.calls.length : 0,
+      ...(output.metadata === undefined ? {} : { metadata: output.metadata }),
+    })
+    return { output, durationMs }
+  }
+
   private async requireSnapshot() {
     const snapshot = await this.options.store.loadSession(this.id)
     if (!snapshot) throw new Error(`Unknown session: ${this.id}`)
     return snapshot
   }
 
-  private replaceModelState(state: ReturnType<typeof projectModelState>): void {
+  private replaceModelState(
+    state: ReturnType<typeof projectModelState>,
+    registryMessages: readonly Message[] = state.messages,
+  ): void {
     this.messages.splice(0, this.messages.length, ...structuredClone(state.messages))
     this.providerContinuation = state.continuation
-    this.toolRegistry.restore(this.messages)
+    this.toolRegistry.restore(registryMessages)
+  }
+
+  private replaceProjectedModelState(state: ReturnType<typeof projectModelState>): void {
+    this.messages.splice(0, this.messages.length, ...structuredClone(state.messages))
+    this.providerContinuation = state.continuation
   }
 
   private requestMessages(): readonly Message[] {
@@ -495,14 +611,16 @@ export class AgentSession {
   }
 
   private modelMessages(): readonly Message[] {
-    if (!this.options.project) return this.messages
-    return [
-      {
-        role: 'system',
-        content: projectInstructions(this.options.project, this.options.accessMode),
-      },
-      ...this.messages,
-    ]
+    const system = this.projectSystemMessage()
+    return system === undefined ? this.messages : [system, ...this.messages]
+  }
+
+  private projectSystemMessage(): Message | undefined {
+    if (!this.options.project) return undefined
+    return {
+      role: 'system',
+      content: projectInstructions(this.options.project, this.options.accessMode),
+    }
   }
 
   private updateProviderContinuation(output: ModelOutput): void {
@@ -649,6 +767,8 @@ export async function runAgent({
   searchableTools,
   prompt,
   maxTokens,
+  contextLimits,
+  tokenEstimator,
   loopGuards,
   onEvent,
 }: RunAgentOptions): Promise<string> {
@@ -658,6 +778,8 @@ export async function runAgent({
     ...(searchableTools === undefined ? {} : { searchableTools }),
     store: new MemorySessionStore(),
     ...(maxTokens === undefined ? {} : { maxTokens }),
+    ...(contextLimits === undefined ? {} : { contextLimits }),
+    ...(tokenEstimator === undefined ? {} : { tokenEstimator }),
     ...(loopGuards === undefined ? {} : { loopGuards }),
     ...(onEvent === undefined ? {} : { onEvent }),
   })

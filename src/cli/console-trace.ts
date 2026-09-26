@@ -79,6 +79,7 @@ export function createConsoleTrace(options: ConsoleTraceOptions): ConsoleTrace {
       || event.type === 'turn.failed'
       || event.type === 'tool.batch-started'
       || event.type === 'loop-guard.reminded'
+      || event.type.startsWith('context.compaction-')
     ) {
       flushCollapsedTools()
     }
@@ -90,6 +91,21 @@ export function createConsoleTrace(options: ConsoleTraceOptions): ConsoleTrace {
       case 'turn.resumed':
         options.write(
           `\n${color.bold('┌─ Turn resumed')} ${color.dim(`${shortId(event.turnId)} · continuing at step ${event.step}`)}`,
+        )
+        return
+      case 'context.compaction-started':
+        options.write(
+          `│  ${color.yellow('→')} ${color.bold('Context compaction')} ${color.dim(`${event.trigger} · ${event.estimatedTokensBefore} estimated tokens`)}`,
+        )
+        return
+      case 'context.compaction-completed':
+        options.write(
+          `│  ${color.green('✓')} ${color.bold(`Context checkpoint ${event.checkpointNumber}`)} ${color.dim(`${event.estimatedTokensBefore} → ${event.estimatedTokensAfter} estimated tokens`)}`,
+        )
+        return
+      case 'context.compaction-failed':
+        options.write(
+          `│  ${color.red('✗')} ${color.bold('Context compaction failed')} ${color.dim(`${event.trigger} · ${event.error}`)}`,
         )
         return
       case 'step.started':

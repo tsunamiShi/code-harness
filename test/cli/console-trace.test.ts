@@ -432,3 +432,25 @@ test('renders Loop Guard reminders as execution-chain checkpoints', () => {
   assert.match(rendered, /Read × 3 · after step 3/)
   assert.match(rendered, /Inspect the existing result/)
 })
+
+test('renders Context compaction lifecycle and token estimates', () => {
+  const output: string[] = []
+  const trace = createConsoleTrace({ write: text => output.push(text), colors: false })
+
+  trace.handle({
+    type: 'context.compaction-started',
+    trigger: 'automatic',
+    estimatedTokensBefore: 90_000,
+  })
+  trace.handle({
+    type: 'context.compaction-completed',
+    trigger: 'automatic',
+    checkpointNumber: 2,
+    estimatedTokensBefore: 90_000,
+    estimatedTokensAfter: 12_000,
+  })
+
+  const rendered = output.join('\n')
+  assert.match(rendered, /Context compaction automatic · 90000 estimated tokens/)
+  assert.match(rendered, /Context checkpoint 2 90000 → 12000 estimated tokens/)
+})

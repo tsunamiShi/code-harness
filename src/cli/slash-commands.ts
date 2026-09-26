@@ -3,6 +3,7 @@ import type { AgentSessionSummary } from '../runtime/session-store.ts'
 export const SLASH_COMMANDS = [
   { name: '/resume', description: 'Select a Session from the current Project.' },
   { name: '/retry', description: 'Continue the current failed or interrupted Turn.' },
+  { name: '/compact', description: 'Summarize completed work into a Context Checkpoint.' },
   { name: '/help', description: 'Show available slash commands.' },
   { name: '/exit', description: 'Exit the CLI.' },
 ] as const

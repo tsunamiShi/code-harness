@@ -14,6 +14,7 @@ import type {
   AgentStep,
   AgentToolExecution,
   AgentTurn,
+  ContextCheckpoint,
   SessionRecord,
   SessionStore,
   StepStatus,
@@ -102,6 +103,40 @@ export class MysqlAgentStore implements SessionStore, ProjectStore {
        ORDER BY t.turn_number, r.reminder_number`,
       [sessionId],
     )
+    const [checkpointRows] = await this.pool.execute<ContextCheckpointRow[]>(
+      `SELECT c.checkpoint_number, CAST(c.covered_through_step_id AS CHAR) AS covered_step_id,
+              c.trigger_kind, c.reason_kind, c.replacement_context,
+              c.estimated_tokens_before, c.estimated_tokens_after,
+              CAST(c.source_invocation_id AS CHAR) AS source_invocation_id,
+              t.id AS covered_turn_id, t.turn_number AS covered_turn_number,
+              s.step_number AS covered_step_number
+       FROM agent_context_checkpoints AS c
+       INNER JOIN agent_steps AS s ON s.id = c.covered_through_step_id
+       INNER JOIN agent_turns AS t ON t.id = s.turn_id
+       WHERE c.session_id = ?
+       ORDER BY c.checkpoint_number DESC
+       LIMIT 1`,
+      [sessionId],
+    )
+    const checkpoint = checkpointRows[0] === undefined
+      ? undefined
+      : toContextCheckpoint(checkpointRows[0])
+    const [inputTokenRows] = await this.pool.execute<(RowDataPacket & { input_tokens: number })[]>(
+      `SELECT i.input_tokens
+       FROM agent_model_invocations AS i
+       INNER JOIN agent_turns AS t ON t.id = i.turn_id
+       WHERE t.session_id = ? AND i.purpose = 'agent' AND i.status = 'completed'
+         AND i.input_tokens IS NOT NULL
+         AND (? = 1 OR (? IS NOT NULL AND i.id > ?))
+       ORDER BY i.id DESC
+       LIMIT 1`,
+      [
+        sessionId,
+        checkpoint === undefined ? 1 : 0,
+        checkpointRows[0]?.source_invocation_id ?? null,
+        checkpointRows[0]?.source_invocation_id ?? null,
+      ],
+    )
 
     const toolCallsByStep = new Map<string, AgentToolExecution[]>()
     for (const row of toolCallRows) {
@@ -133,6 +168,10 @@ export class MysqlAgentStore implements SessionStore, ProjectStore {
         stepsByTurn.get(row.id) ?? [],
         remindersByTurn.get(row.id) ?? [],
       )),
+      ...(checkpoint === undefined ? {} : { contextCheckpoint: checkpoint }),
+      ...(inputTokenRows[0] === undefined
+        ? {}
+        : { latestInputTokens: inputTokenRows[0].input_tokens }),
     }
   }
 
@@ -354,6 +393,42 @@ export class MysqlAgentStore implements SessionStore, ProjectStore {
     }
   }
 
+  async recoverInterruptedCompactions(
+    sessionId: string,
+    interruptedError: string,
+  ): Promise<void> {
+    const connection = await this.pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      await lockSession(connection, sessionId)
+      await connection.execute(
+        `UPDATE agent_model_attempts AS a
+         INNER JOIN agent_model_invocations AS i ON i.id = a.invocation_id
+         INNER JOIN agent_turns AS t ON t.id = i.turn_id
+         SET a.status = 'failed', a.failure_phase = a.phase, a.phase = 'failed',
+             a.error_name = 'InterruptedExecution', a.error_message = ?,
+             a.completed_at = CURRENT_TIMESTAMP(6)
+         WHERE t.session_id = ? AND i.purpose = 'compaction'
+           AND i.status = 'running' AND a.status = 'running'`,
+        [interruptedError, sessionId],
+      )
+      await connection.execute(
+        `UPDATE agent_model_invocations AS i
+         INNER JOIN agent_turns AS t ON t.id = i.turn_id
+         SET i.status = 'failed', i.error_name = 'InterruptedExecution',
+             i.error_message = ?, i.completed_at = CURRENT_TIMESTAMP(6)
+         WHERE t.session_id = ? AND i.purpose = 'compaction' AND i.status = 'running'`,
+        [interruptedError, sessionId],
+      )
+      await connection.commit()
+    } catch (error: unknown) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
+  }
+
   async close(): Promise<void> {
     await this.pool.end()
   }
@@ -389,6 +464,20 @@ interface StepRow extends RowDataPacket {
   output_kind: string
   assistant_content: string | null
   provider_response_id: string | null
+}
+
+interface ContextCheckpointRow extends RowDataPacket {
+  checkpoint_number: number
+  covered_step_id: string
+  covered_turn_id: string
+  covered_turn_number: number
+  covered_step_number: number
+  trigger_kind: string
+  reason_kind: string
+  replacement_context: unknown
+  estimated_tokens_before: number | null
+  estimated_tokens_after: number | null
+  source_invocation_id: string | null
 }
 
 interface ToolCallRow extends RowDataPacket {
@@ -475,7 +564,7 @@ async function migrate(pool: Pool): Promise<void> {
     'SELECT MAX(version) AS version FROM agent_schema_migrations',
   )
   const version = rows[0]?.version ?? 0
-  if (version > 10) throw new Error(`Database schema version ${version} is newer than supported version 10`)
+  if (version > 11) throw new Error(`Database schema version ${version} is newer than supported version 11`)
 
   if (version < 1) {
     await pool.execute(`
@@ -792,6 +881,50 @@ async function migrate(pool: Pool): Promise<void> {
     `)
     await pool.execute('INSERT IGNORE INTO agent_schema_migrations (version) VALUES (10)')
   }
+
+  if (version < 11) {
+    await pool.execute(`
+      ALTER TABLE agent_model_invocations
+        ADD COLUMN purpose VARCHAR(32) NOT NULL DEFAULT 'agent' AFTER invocation_number,
+        ADD COLUMN provider_response_id VARCHAR(255) NULL AFTER provider_request_id,
+        ADD CONSTRAINT chk_agent_model_invocations_purpose
+          CHECK (purpose IN ('agent', 'compaction'))
+    `)
+    await pool.execute(`
+      CREATE TABLE agent_context_checkpoints (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        session_id VARCHAR(36) NOT NULL,
+        checkpoint_number INT UNSIGNED NOT NULL,
+        covered_through_step_id BIGINT UNSIGNED NOT NULL,
+        trigger_kind VARCHAR(16) NOT NULL,
+        reason_kind VARCHAR(32) NOT NULL,
+        strategy VARCHAR(32) NOT NULL,
+        payload_version INT UNSIGNED NOT NULL,
+        replacement_context JSON NOT NULL,
+        source_invocation_id BIGINT UNSIGNED NULL,
+        estimated_tokens_before BIGINT UNSIGNED NULL,
+        estimated_tokens_after BIGINT UNSIGNED NULL,
+        created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+        UNIQUE KEY uq_agent_context_checkpoints_session_number
+          (session_id, checkpoint_number),
+        KEY idx_agent_context_checkpoints_session_cursor
+          (session_id, covered_through_step_id),
+        CONSTRAINT fk_agent_context_checkpoints_session FOREIGN KEY (session_id)
+          REFERENCES agent_sessions (id) ON DELETE CASCADE,
+        CONSTRAINT fk_agent_context_checkpoints_step FOREIGN KEY (covered_through_step_id)
+          REFERENCES agent_steps (id) ON DELETE CASCADE,
+        CONSTRAINT fk_agent_context_checkpoints_invocation FOREIGN KEY (source_invocation_id)
+          REFERENCES agent_model_invocations (id) ON DELETE SET NULL,
+        CONSTRAINT chk_agent_context_checkpoints_trigger
+          CHECK (trigger_kind IN ('automatic', 'manual')),
+        CONSTRAINT chk_agent_context_checkpoints_reason
+          CHECK (reason_kind IN ('token-limit', 'user-requested', 'model-change')),
+        CONSTRAINT chk_agent_context_checkpoints_strategy
+          CHECK (strategy IN ('summary'))
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+    `)
+    await pool.execute('INSERT IGNORE INTO agent_schema_migrations (version) VALUES (11)')
+  }
 }
 
 async function lockSession(connection: PoolConnection, sessionId: string): Promise<void> {
@@ -831,7 +964,12 @@ async function applyRecord(
       return
     }
     case 'model.invocation-started': {
-      await requireRunningTurn(connection, sessionId, record.turnId)
+      const purpose = record.purpose ?? 'agent'
+      if (purpose === 'agent') {
+        await requireRunningTurn(connection, sessionId, record.turnId)
+      } else {
+        await requireSessionTurn(connection, sessionId, record.turnId)
+      }
       const [numbers] = await connection.execute<(RowDataPacket & { next_number: number })[]>(
         `SELECT COALESCE(MAX(invocation_number), 0) + 1 AS next_number
          FROM agent_model_invocations WHERE turn_id = ? AND step_number = ?`,
@@ -843,14 +981,15 @@ async function applyRecord(
       }
       await connection.execute(
         `INSERT INTO agent_model_invocations
-           (turn_id, step_number, invocation_number, status, provider_name, model_name,
+           (turn_id, step_number, invocation_number, purpose, status, provider_name, model_name,
             protocol_name, request_timeout_ms, max_retries, message_count, tool_count,
             input_chars, max_tokens)
-         VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           record.turnId,
           record.step,
           invocationNumber,
+          purpose,
           record.descriptor?.provider ?? null,
           record.descriptor?.model ?? null,
           record.descriptor?.protocol ?? null,
@@ -966,6 +1105,7 @@ async function applyRecord(
         `UPDATE agent_model_invocations
          SET status = 'completed', output_kind = ?, output_chars = ?, reasoning_chars = ?,
              tool_call_count = ?, finish_reason = ?, provider_request_id = ?,
+             provider_response_id = ?,
              input_tokens = ?, output_tokens = ?, total_tokens = ?,
              cached_input_tokens = ?, reasoning_tokens = ?, completed_at = CURRENT_TIMESTAMP(6)
          WHERE turn_id = ? AND step_number = ? AND status = 'running'`,
@@ -976,6 +1116,7 @@ async function applyRecord(
           record.toolCallCount,
           record.metadata?.finishReason ?? null,
           record.metadata?.providerRequestId ?? null,
+          record.metadata?.providerResponseId ?? null,
           usage?.inputTokens ?? null,
           usage?.outputTokens ?? null,
           usage?.totalTokens ?? null,
@@ -997,6 +1138,80 @@ async function applyRecord(
         [record.errorName, record.error, record.turnId, record.step],
       )
       requireChanged(result, `Cannot fail model invocation for step ${record.step}`)
+      return
+    }
+    case 'context.compacted': {
+      const [checkpointRows] = await connection.execute<(
+        RowDataPacket & { checkpoint_number: number; covered_step_id: string }
+      )[]>(
+        `SELECT checkpoint_number,
+                CAST(covered_through_step_id AS CHAR) AS covered_step_id
+         FROM agent_context_checkpoints
+         WHERE session_id = ?
+         ORDER BY checkpoint_number DESC
+         LIMIT 1`,
+        [sessionId],
+      )
+      const checkpointNumber = checkpointRows[0]?.checkpoint_number ?? 0
+      if (checkpointNumber !== record.expectedCheckpointNumber) {
+        throw new Error('A newer Context Checkpoint already exists')
+      }
+      if (checkpointRows[0]?.covered_step_id === record.coveredThroughStepId) {
+        throw new Error('There is no completed Step after the latest Context Checkpoint')
+      }
+      const [cursorRows] = await connection.execute<(
+        RowDataPacket & { step_id: string; turn_id: string; step_number: number }
+      )[]>(
+        `SELECT CAST(s.id AS CHAR) AS step_id, t.id AS turn_id, s.step_number
+         FROM agent_steps AS s
+         INNER JOIN agent_turns AS t ON t.id = s.turn_id
+         WHERE t.session_id = ? AND s.status = 'completed'
+         ORDER BY t.turn_number DESC, s.step_number DESC
+         LIMIT 1`,
+        [sessionId],
+      )
+      if (cursorRows[0]?.step_id !== record.coveredThroughStepId) {
+        throw new Error('Context Checkpoint cursor is stale')
+      }
+      if (
+        record.trigger === 'manual'
+        && (
+          cursorRows[0]?.turn_id !== record.turnId
+          || cursorRows[0]?.step_number !== record.step
+        )
+      ) {
+        throw new Error('Context Checkpoint invocation does not match its cursor')
+      }
+      const [invocations] = await connection.execute<(
+        RowDataPacket & { id: number }
+      )[]>(
+        `SELECT id FROM agent_model_invocations
+         WHERE turn_id = ? AND step_number = ? AND purpose = 'compaction'
+           AND status = 'completed'
+         ORDER BY invocation_number DESC
+         LIMIT 1`,
+        [record.turnId, record.step],
+      )
+      const invocationId = invocations[0]?.id
+      if (invocationId === undefined) throw new Error('Completed compaction invocation not found')
+      await connection.execute(
+        `INSERT INTO agent_context_checkpoints
+           (session_id, checkpoint_number, covered_through_step_id, trigger_kind,
+            reason_kind, strategy, payload_version, replacement_context,
+            source_invocation_id, estimated_tokens_before, estimated_tokens_after)
+         VALUES (?, ?, ?, ?, ?, 'summary', 1, ?, ?, ?, ?)`,
+        [
+          sessionId,
+          checkpointNumber + 1,
+          record.coveredThroughStepId,
+          record.trigger,
+          record.reason,
+          JSON.stringify(record.payload),
+          invocationId,
+          record.estimatedTokensBefore ?? null,
+          record.estimatedTokensAfter ?? null,
+        ],
+      )
       return
     }
     case 'loop-guard.reminded': {
@@ -1092,6 +1307,18 @@ async function requireRunningTurn(
   if (rows.length === 0) throw new Error(`Turn ${turnId} is not running in session ${sessionId}`)
 }
 
+async function requireSessionTurn(
+  connection: PoolConnection,
+  sessionId: string,
+  turnId: string,
+): Promise<void> {
+  const [rows] = await connection.execute<RowDataPacket[]>(
+    'SELECT id FROM agent_turns WHERE id = ? AND session_id = ?',
+    [turnId, sessionId],
+  )
+  if (rows.length === 0) throw new Error(`Unknown turn ${turnId} in session ${sessionId}`)
+}
+
 async function requireRunningModelInvocation(
   connection: PoolConnection,
   turnId: string,
@@ -1179,6 +1406,7 @@ function toStep(row: StepRow, executions: readonly AgentToolExecution[]): AgentS
   if (row.output_kind === 'final') {
     if (row.assistant_content === null) throw new Error(`Final step ${row.step_number} has no content`)
     return {
+      id: row.id,
       stepNumber: row.step_number,
       status,
       ...(row.provider_response_id === null
@@ -1192,6 +1420,7 @@ function toStep(row: StepRow, executions: readonly AgentToolExecution[]): AgentS
   }
   if (executions.length === 0) throw new Error(`Tool step ${row.step_number} has no calls`)
   return {
+    id: row.id,
     stepNumber: row.step_number,
     status,
     ...(row.provider_response_id === null
@@ -1199,6 +1428,57 @@ function toStep(row: StepRow, executions: readonly AgentToolExecution[]): AgentS
       : { providerResponseId: row.provider_response_id }),
     output: { kind: 'tool-calls', executions },
   }
+}
+
+function toContextCheckpoint(row: ContextCheckpointRow): ContextCheckpoint {
+  const payload = parseJson(row.replacement_context)
+  if (!isSummaryCheckpointPayload(payload)) {
+    throw new Error(`Invalid Context Checkpoint payload at checkpoint ${row.checkpoint_number}`)
+  }
+  if (row.trigger_kind !== 'automatic' && row.trigger_kind !== 'manual') {
+    throw new Error(`Unknown Context Checkpoint trigger: ${row.trigger_kind}`)
+  }
+  if (
+    row.reason_kind !== 'token-limit'
+    && row.reason_kind !== 'user-requested'
+    && row.reason_kind !== 'model-change'
+  ) {
+    throw new Error(`Unknown Context Checkpoint reason: ${row.reason_kind}`)
+  }
+  return {
+    checkpointNumber: row.checkpoint_number,
+    coveredThroughStepId: row.covered_step_id,
+    coveredThroughTurnId: row.covered_turn_id,
+    coveredThroughTurnNumber: row.covered_turn_number,
+    coveredThroughStepNumber: row.covered_step_number,
+    trigger: row.trigger_kind,
+    reason: row.reason_kind,
+    payload,
+    ...(row.estimated_tokens_before === null
+      ? {}
+      : { estimatedTokensBefore: row.estimated_tokens_before }),
+    ...(row.estimated_tokens_after === null
+      ? {}
+      : { estimatedTokensAfter: row.estimated_tokens_after }),
+  }
+}
+
+function isSummaryCheckpointPayload(value: unknown): value is ContextCheckpoint['payload'] {
+  if (!isRecord(value) || value.version !== 1 || value.kind !== 'summary') return false
+  if (!Array.isArray(value.messages) || value.messages.length === 0) return false
+  if (!value.messages.every(message =>
+    isRecord(message)
+    && message.role === 'user'
+    && typeof message.content === 'string'
+  )) return false
+  const finalMessage = value.messages.at(-1)
+  return isRecord(finalMessage)
+    && typeof finalMessage.content === 'string'
+    && finalMessage.content.startsWith('[Context checkpoint]\n')
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function toToolExecution(row: ToolCallRow): AgentToolExecution {

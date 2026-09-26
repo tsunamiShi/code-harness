@@ -21,6 +21,7 @@ import {
   slashCommandHelp,
 } from './slash-commands.ts'
 import {
+  agentContextLimitsFromEnvironment,
   agentMcpConfigPathFromEnvironment,
   agentMaxTokensFromEnvironment,
   agentLoopGuardModelFromEnvironment,
@@ -56,6 +57,7 @@ try {
   const loopGuardThresholds = agentLoopGuardThresholdsFromEnvironment()
   const noProgressThresholds = agentNoProgressThresholdsFromEnvironment()
   const maxTokens = agentMaxTokensFromEnvironment()
+  const contextLimits = agentContextLimitsFromEnvironment()
   const apiKey = requiredEnvironment('DASHSCOPE_API_KEY')
   const baseURL = requiredEnvironment('DASHSCOPE_BASE_URL')
   const loopGuardModelName = agentLoopGuardModelFromEnvironment()
@@ -95,6 +97,7 @@ try {
     project,
     accessMode: target.accessMode,
     ...(maxTokens === undefined ? {} : { maxTokens }),
+    ...(contextLimits === undefined ? {} : { contextLimits }),
     onEvent: (event: AgentEvent) => elapsedDisplay.handle(event, () => trace.handle(event)),
   }
   let session = target.kind === 'session'
@@ -130,6 +133,11 @@ try {
   console.log(
     `Loop Guard: exact repeats ${loopGuardThresholds.join('/')} via ${loopGuardModelName} · no progress ${noProgressThresholds.join('/')} steps`,
   )
+  console.log(
+    `Context compaction: ${contextLimits === undefined
+      ? 'manual only'
+      : `automatic at ${contextLimits.autoCompactTokenLimit} estimated tokens`}`,
+  )
   console.log(`Session: ${session.id}`)
   console.log('Type / then Tab for commands. Resume later with: ai-agent --session <session-id>')
 
@@ -163,6 +171,17 @@ try {
           await session.continueTurn()
         } catch (error: unknown) {
           console.error(`Agent recovery error: ${error instanceof Error ? error.message : String(error)}`)
+        }
+        continue
+      }
+      if (prompt === '/compact') {
+        try {
+          const result = await session.compact()
+          console.log(
+            `Context checkpoint ${result.checkpointNumber} installed · estimated tokens ${result.estimatedTokensBefore} → ${result.estimatedTokensAfter}`,
+          )
+        } catch (error: unknown) {
+          console.error(`Context compaction error: ${error instanceof Error ? error.message : String(error)}`)
         }
         continue
       }

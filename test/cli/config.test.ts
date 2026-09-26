@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  agentContextLimitsFromEnvironment,
   agentMcpConfigPathFromEnvironment,
   agentMaxTokensFromEnvironment,
   agentLoopGuardModelFromEnvironment,
@@ -10,6 +11,43 @@ import {
   agentTraceMaxResultCharsFromEnvironment,
   agentTraceModeFromEnvironment,
 } from '../../src/cli/config.ts'
+
+test('configures automatic Context compaction with a conservative default threshold', () => {
+  const previousWindow = process.env.AGENT_CONTEXT_WINDOW_TOKENS
+  const previousLimit = process.env.AGENT_AUTO_COMPACT_TOKEN_LIMIT
+  try {
+    delete process.env.AGENT_CONTEXT_WINDOW_TOKENS
+    delete process.env.AGENT_AUTO_COMPACT_TOKEN_LIMIT
+    assert.equal(agentContextLimitsFromEnvironment(), undefined)
+
+    process.env.AGENT_CONTEXT_WINDOW_TOKENS = '100000'
+    assert.deepEqual(agentContextLimitsFromEnvironment(), {
+      contextWindowTokens: 100000,
+      autoCompactTokenLimit: 90000,
+    })
+
+    process.env.AGENT_AUTO_COMPACT_TOKEN_LIMIT = '80000'
+    assert.deepEqual(agentContextLimitsFromEnvironment(), {
+      contextWindowTokens: 100000,
+      autoCompactTokenLimit: 80000,
+    })
+
+    process.env.AGENT_AUTO_COMPACT_TOKEN_LIMIT = '90001'
+    assert.throws(agentContextLimitsFromEnvironment, /exceeds 90%/)
+
+    process.env.AGENT_CONTEXT_WINDOW_TOKENS = 'invalid'
+    assert.throws(agentContextLimitsFromEnvironment, /Invalid AGENT_CONTEXT_WINDOW_TOKENS/)
+
+    process.env.AGENT_CONTEXT_WINDOW_TOKENS = '1'
+    delete process.env.AGENT_AUTO_COMPACT_TOKEN_LIMIT
+    assert.throws(agentContextLimitsFromEnvironment, /Invalid AGENT_CONTEXT_WINDOW_TOKENS/)
+  } finally {
+    if (previousWindow === undefined) delete process.env.AGENT_CONTEXT_WINDOW_TOKENS
+    else process.env.AGENT_CONTEXT_WINDOW_TOKENS = previousWindow
+    if (previousLimit === undefined) delete process.env.AGENT_AUTO_COMPACT_TOKEN_LIMIT
+    else process.env.AGENT_AUTO_COMPACT_TOKEN_LIMIT = previousLimit
+  }
+})
 
 test('uses an explicit MCP config before the environment fallback', () => {
   const previous = process.env.AGENT_MCP_CONFIG

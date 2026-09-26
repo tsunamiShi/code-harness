@@ -92,12 +92,14 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
             }
           : {
               kind: 'final',
-              content: '第一轮完成',
+              content: request === 2 ? '第一轮完成' : '第一轮上下文摘要',
               metadata: {
-                providerResponseId: 'response-2',
-                providerRequestId: 'provider-request-2',
+                providerResponseId: `response-${request}`,
+                providerRequestId: `provider-request-${request}`,
                 finishReason: 'stop',
-                usage: { inputTokens: 20, outputTokens: 4, totalTokens: 24 },
+                usage: request === 2
+                  ? { inputTokens: 2_000, outputTokens: 4, totalTokens: 2_004 }
+                  : { inputTokens: 300, outputTokens: 8, totalTokens: 308 },
               },
             }
       },
@@ -172,8 +174,8 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
         status: 'completed',
         provider_name: 'integration-provider',
         model_name: 'integration-model',
-        input_tokens: 20,
-        total_tokens: 24,
+        input_tokens: 2000,
+        total_tokens: 2004,
         max_tokens: null,
       },
     ])
@@ -223,6 +225,34 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
         event_count: 8,
       },
     ])
+
+    const compacted = await first.compact()
+    assert.equal(compacted.checkpointNumber, 1)
+    assert.ok(compacted.estimatedTokensAfter < compacted.estimatedTokensBefore)
+    const compactedSnapshot = await store.loadSession(sessionId)
+    assert.equal(compactedSnapshot?.contextCheckpoint?.coveredThroughStepNumber, 2)
+    assert.equal(compactedSnapshot?.turns[0]?.steps.length, 2)
+    const [checkpointRows] = await admin.query<(RowDataPacket & {
+      checkpoint_number: number
+      purpose: string
+      provider_response_id: string
+      source_invocation_id: number
+    })[]>(
+      `SELECT c.checkpoint_number, i.purpose, i.provider_response_id,
+              c.source_invocation_id
+       FROM \`${database}\`.agent_context_checkpoints AS c
+       INNER JOIN \`${database}\`.agent_model_invocations AS i
+         ON i.id = c.source_invocation_id
+       WHERE c.session_id = ?`,
+      [sessionId],
+    )
+    assert.deepEqual(checkpointRows.map(row => ({ ...row })), [{
+      checkpoint_number: 1,
+      purpose: 'compaction',
+      provider_response_id: 'response-3',
+      source_invocation_id: checkpointRows[0]?.source_invocation_id,
+    }])
+    assert.ok((checkpointRows[0]?.source_invocation_id ?? 0) > 0)
 
     const failedTransport = await AgentSession.create({
       model: {
@@ -288,7 +318,11 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
         async generate(input) {
           restoredMessages = structuredClone(input.messages)
           restoredResponseId = input.previousResponseId
-          return { kind: 'final', content: '第二轮完成' }
+          return {
+            kind: 'final',
+            content: '第二轮完成',
+            metadata: { usage: { inputTokens: 2_000, outputTokens: 4, totalTokens: 2_004 } },
+          }
         },
       },
       tools: [search],
@@ -297,9 +331,57 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
     })
     await resumed.send('第二轮')
 
-    assert.equal(restoredResponseId, 'response-2')
-    assert.deepEqual(restoredMessages, [
-      { role: 'user', content: '第二轮' },
+    assert.equal(restoredResponseId, undefined)
+    assert.equal(restoredMessages.filter(message => message.role === 'system').length, 1)
+    assert.equal(restoredMessages.some(message =>
+      message.role === 'user' && message.content.startsWith('[Context checkpoint]')
+    ), true)
+    assert.deepEqual(restoredMessages.at(-1), { role: 'user', content: '第二轮' })
+
+    const afterSecondTurn = await store.loadSession(sessionId)
+    const secondTurn = afterSecondTurn?.turns[1]
+    assert.ok(secondTurn)
+    await store.record(sessionId, {
+      type: 'model.invocation-started',
+      turnId: secondTurn.id,
+      step: 1,
+      purpose: 'compaction',
+      messageCount: 4,
+      toolCount: 0,
+      inputChars: 200,
+    })
+    await store.close()
+    store = await MysqlAgentStore.connect(options)
+    const retriedCompaction = await AgentSession.resume(sessionId, {
+      model: {
+        async generate() {
+          return {
+            kind: 'final',
+            content: '两轮对话的恢复摘要',
+            metadata: { providerResponseId: 'response-retried-compaction' },
+          }
+        },
+      },
+      tools: [search],
+      store,
+      project: restoredProject,
+    })
+    assert.equal((await retriedCompaction.compact()).checkpointNumber, 2)
+    const [recoveredCompactionRows] = await admin.query<(RowDataPacket & {
+      purpose: string
+      status: string
+      error_name: string | null
+    })[]>(
+      `SELECT purpose, status, error_name
+       FROM \`${database}\`.agent_model_invocations
+       WHERE turn_id = ? AND step_number = 1
+       ORDER BY invocation_number`,
+      [secondTurn.id],
+    )
+    assert.deepEqual(recoveredCompactionRows.map(row => ({ ...row })), [
+      { purpose: 'agent', status: 'completed', error_name: null },
+      { purpose: 'compaction', status: 'failed', error_name: 'InterruptedExecution' },
+      { purpose: 'compaction', status: 'completed', error_name: null },
     ])
 
     let recoveryRequest = 0
@@ -434,6 +516,32 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
       summary: 'search × 3',
       content: 'Loop Guard reminder: inspect the existing result.',
     }])
+
+    await store.close()
+    store = undefined
+    await admin.query(`DROP TABLE \`${database}\`.agent_context_checkpoints`)
+    await admin.query(`
+      ALTER TABLE \`${database}\`.agent_model_invocations
+        DROP CHECK chk_agent_model_invocations_purpose,
+        DROP COLUMN provider_response_id,
+        DROP COLUMN purpose
+    `)
+    await admin.query(`DELETE FROM \`${database}\`.agent_schema_migrations WHERE version = 11`)
+
+    store = await MysqlAgentStore.connect(options)
+    const [migrationRows] = await admin.query<(RowDataPacket & { version: number })[]>(
+      `SELECT MAX(version) AS version FROM \`${database}\`.agent_schema_migrations`,
+    )
+    assert.equal(migrationRows[0]?.version, 11)
+    const [columnRows] = await admin.query<(RowDataPacket & { name: string })[]>(
+      `SELECT column_name AS name
+       FROM information_schema.columns
+       WHERE table_schema = ? AND table_name = 'agent_model_invocations'
+         AND column_name IN ('purpose', 'provider_response_id')
+       ORDER BY column_name`,
+      [database],
+    )
+    assert.deepEqual(columnRows.map(row => row.name), ['provider_response_id', 'purpose'])
   } finally {
     await store?.close()
     await admin.query(`DROP DATABASE IF EXISTS \`${database}\``)

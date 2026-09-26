@@ -1254,6 +1254,410 @@ test('restores the last Responses continuation after reopening a session', async
   assert.equal(await resumed.send('second'), 'second done')
 })
 
+test('installs a manual Context Checkpoint without deleting durable history', async () => {
+  const inner = new MemorySessionStore()
+  const records: SessionRecord[] = []
+  const events: AgentEvent[] = []
+  const requests: Array<{
+    messages: readonly Message[]
+    tools: readonly string[]
+    previousResponseId?: string
+  }> = []
+  const store: SessionStore = {
+    createSession: async projectId => await inner.createSession(projectId),
+    loadSession: async sessionId => await inner.loadSession(sessionId),
+    recoverTurn: async (sessionId, turnId, error) => {
+      await inner.recoverTurn(sessionId, turnId, error)
+    },
+    record: async (sessionId, record) => {
+      records.push(structuredClone(record))
+      await inner.record(sessionId, record)
+    },
+  }
+  let invocation = 0
+  const session = await AgentSession.create({
+    model: {
+      async generate(input) {
+        invocation += 1
+        requests.push({
+          messages: structuredClone(input.messages),
+          tools: input.tools.map(tool => tool.name),
+          ...(input.previousResponseId === undefined
+            ? {}
+            : { previousResponseId: input.previousResponseId }),
+        })
+        if (invocation === 1) {
+          return {
+            kind: 'final',
+            content: `旧回答：${'x'.repeat(2_000)}`,
+            metadata: {
+              providerResponseId: 'response-before-compact',
+              usage: { inputTokens: 700, outputTokens: 500, totalTokens: 1_200 },
+            },
+          }
+        }
+        if (invocation === 2) {
+          assert.equal(input.previousResponseId, undefined)
+          assert.deepEqual(input.tools, [])
+          const instruction = input.messages.at(-1)
+          assert.match(
+            instruction?.role === 'user' ? instruction.content : '',
+            /Create a concise context handoff/,
+          )
+          return {
+            kind: 'final',
+            content: '用户给出的暗号是蓝鲸；旧回答已完成。',
+            metadata: { providerResponseId: 'response-summary' },
+          }
+        }
+        assert.equal(input.previousResponseId, undefined)
+        assert.equal(input.messages.some(message =>
+          message.role === 'assistant' && 'content' in message && message.content.includes('旧回答')
+        ), false)
+        assert.equal(input.messages.some(message =>
+          message.role === 'user' && message.content.startsWith('[Context checkpoint]')
+        ), true)
+        return { kind: 'final', content: '暗号仍然是蓝鲸。' }
+      },
+    },
+    tools: [],
+    store,
+    onEvent: event => events.push(structuredClone(event)),
+  })
+
+  await session.send('记住暗号是蓝鲸。')
+  const compacted = await session.compact()
+  assert.equal(compacted.checkpointNumber, 1)
+  assert.ok(compacted.estimatedTokensAfter < compacted.estimatedTokensBefore)
+  await assert.rejects(session.compact(), /no completed Step after the latest Context Checkpoint/)
+  assert.equal(await session.send('暗号是什么？'), '暗号仍然是蓝鲸。')
+
+  assert.equal(requests[2]?.previousResponseId, undefined)
+  assert.deepEqual(
+    records.filter(record => record.type === 'model.invocation-started').map(record =>
+      record.type === 'model.invocation-started' ? record.purpose : undefined
+    ),
+    ['agent', 'compaction', 'agent'],
+  )
+  assert.deepEqual(events.filter(event => event.type.startsWith('context.')).map(event => event.type), [
+    'context.compaction-started',
+    'context.compaction-completed',
+  ])
+  const snapshot = await store.loadSession(session.id)
+  assert.equal(snapshot?.turns.length, 2)
+  assert.match(snapshot?.turns[0]?.steps[0]?.output.kind === 'final'
+    ? snapshot.turns[0].steps[0].output.content
+    : '', /旧回答/)
+  assert.equal(snapshot?.contextCheckpoint?.coveredThroughTurnNumber, 1)
+})
+
+test('automatically compacts at a safe completed Step and bounds Tool Result source content', async () => {
+  const store = new MemorySessionStore()
+  const events: AgentEvent[] = []
+  const hugeResult = `HEAD-${'x'.repeat(100_000)}-TAIL`
+  let invocation = 0
+  let compactionSource: readonly Message[] = []
+  const session = await AgentSession.create({
+    model: {
+      async generate(input) {
+        invocation += 1
+        if (invocation === 1) {
+          return {
+            kind: 'tool-calls',
+            calls: [{ id: 'large-read', name: 'Read', arguments: { path: '/project/large.txt' } }],
+            metadata: { providerResponseId: 'response-tool-step' },
+          }
+        }
+        if (invocation === 2) {
+          compactionSource = structuredClone(input.messages)
+          assert.equal(input.previousResponseId, undefined)
+          assert.deepEqual(input.tools, [])
+          return { kind: 'final', content: '已读取大文件，保留了开头和结尾证据。' }
+        }
+        assert.equal(input.previousResponseId, undefined)
+        assert.equal(input.messages.some(message => message.role === 'tool'), false)
+        return { kind: 'final', content: 'done after automatic compaction' }
+      },
+    },
+    tools: [{
+      effect: 'observe',
+      description: { name: 'Read', description: 'Read.', parameters: {} },
+      async execute() {
+        return hugeResult
+      },
+    }],
+    store,
+    contextLimits: { contextWindowTokens: 50_000, autoCompactTokenLimit: 15_000 },
+    onEvent: event => events.push(structuredClone(event)),
+  })
+
+  assert.equal(await session.send('读取大文件并完成任务。'), 'done after automatic compaction')
+  const summarizedTool = compactionSource.find(message => message.role === 'tool')
+  assert.equal(summarizedTool?.role, 'tool')
+  if (summarizedTool?.role === 'tool') {
+    assert.ok(summarizedTool.content.length < hugeResult.length)
+    assert.match(summarizedTool.content, /^HEAD-/)
+    assert.match(summarizedTool.content, /context omitted/)
+    assert.match(summarizedTool.content, /-TAIL$/)
+  }
+  assert.deepEqual(events.filter(event => event.type.startsWith('context.')).map(event => event.type), [
+    'context.compaction-started',
+    'context.compaction-completed',
+  ])
+  const snapshot = await store.loadSession(session.id)
+  const firstStep = snapshot?.turns[0]?.steps[0]
+  assert.equal(firstStep?.output.kind, 'tool-calls')
+  if (firstStep?.output.kind === 'tool-calls') {
+    assert.equal(firstStep.output.executions[0]?.result, hugeResult)
+  }
+  assert.deepEqual(session.history(), [
+    { role: 'user', content: '读取大文件并完成任务。' },
+    { role: 'user', content: '[Context checkpoint]\n已读取大文件，保留了开头和结尾证据。' },
+    { role: 'assistant', content: 'done after automatic compaction' },
+  ])
+})
+
+test('replays only checkpoint replacement and tail when Provider continuation is unavailable', async () => {
+  const store = new MemorySessionStore()
+  let invocation = 0
+  const requests: Array<{
+    messages: readonly Message[]
+    previousResponseId?: string
+  }> = []
+  const session = await AgentSession.create({
+    model: {
+      async generate(input) {
+        invocation += 1
+        requests.push({
+          messages: structuredClone(input.messages),
+          ...(input.previousResponseId === undefined
+            ? {}
+            : { previousResponseId: input.previousResponseId }),
+        })
+        if (invocation === 1) {
+          return {
+            kind: 'final',
+            content: `raw old answer ${'x'.repeat(2_000)}`,
+            metadata: {
+              providerResponseId: 'pre-checkpoint-response',
+              usage: { inputTokens: 700, outputTokens: 500, totalTokens: 1_200 },
+            },
+          }
+        }
+        if (invocation === 2) return { kind: 'final', content: 'bounded checkpoint summary' }
+        if (invocation === 3) {
+          return {
+            kind: 'final',
+            content: 'tail answer',
+            metadata: { providerResponseId: 'post-checkpoint-response' },
+          }
+        }
+        if (invocation === 4) {
+          assert.equal(input.previousResponseId, 'post-checkpoint-response')
+          throw new ModelContinuationUnavailableError('continuation expired')
+        }
+        assert.equal(input.previousResponseId, undefined)
+        assert.equal(input.messages.some(message =>
+          message.role === 'assistant'
+          && 'content' in message
+          && message.content.includes('raw old answer')
+        ), false)
+        assert.equal(input.messages.some(message =>
+          message.role === 'user' && message.content.startsWith('[Context checkpoint]')
+        ), true)
+        assert.deepEqual(input.messages.slice(-3), [
+          { role: 'user', content: 'second turn' },
+          { role: 'assistant', content: 'tail answer' },
+          { role: 'user', content: 'third turn' },
+        ])
+        return { kind: 'final', content: 'bounded replay succeeded' }
+      },
+    },
+    tools: [],
+    store,
+  })
+
+  await session.send('first turn')
+  await session.compact()
+  await session.send('second turn')
+  assert.equal(await session.send('third turn'), 'bounded replay succeeded')
+  assert.equal(requests[3]?.messages.length, 1)
+})
+
+test('keeps the prior projection when a compaction model returns Tool Calls', async () => {
+  const store = new MemorySessionStore()
+  const events: AgentEvent[] = []
+  let invocation = 0
+  const session = await AgentSession.create({
+    model: {
+      async generate() {
+        invocation += 1
+        return invocation === 1
+          ? {
+              kind: 'final',
+              content: `durable answer ${'x'.repeat(2_000)}`,
+              metadata: { usage: { inputTokens: 700, outputTokens: 500, totalTokens: 1_200 } },
+            }
+          : {
+              kind: 'tool-calls',
+              calls: [{ id: 'not-allowed', name: 'Read', arguments: {} }],
+            }
+      },
+    },
+    tools: [],
+    store,
+    onEvent: event => events.push(structuredClone(event)),
+  })
+
+  await session.send('keep this history')
+  const before = session.history()
+  await assert.rejects(session.compact(), /Tool Calls instead of a summary/)
+  assert.deepEqual(session.history(), before)
+  const snapshot = await store.loadSession(session.id)
+  assert.equal(snapshot?.contextCheckpoint, undefined)
+  assert.equal(snapshot?.turns[0]?.status, 'completed')
+  assert.equal(events.at(-1)?.type, 'context.compaction-failed')
+})
+
+test('recovers an interrupted compaction invocation before retrying after resume', async () => {
+  const store = new MemorySessionStore()
+  const first = await AgentSession.create({
+    model: {
+      async generate() {
+        return {
+          kind: 'final',
+          content: `durable answer ${'x'.repeat(2_000)}`,
+          metadata: { usage: { inputTokens: 700, outputTokens: 500, totalTokens: 1_200 } },
+        }
+      },
+    },
+    tools: [],
+    store,
+  })
+  await first.send('preserve this prompt')
+  const snapshot = await store.loadSession(first.id)
+  const turn = snapshot?.turns[0]
+  assert.ok(turn)
+  await store.record(first.id, {
+    type: 'model.invocation-started',
+    turnId: turn.id,
+    step: 1,
+    purpose: 'compaction',
+    messageCount: 2,
+    toolCount: 0,
+    inputChars: 100,
+  })
+
+  const resumed = await AgentSession.resume(first.id, {
+    model: { async generate() { return { kind: 'final', content: 'recovered summary' } } },
+    tools: [],
+    store,
+  })
+  const compacted = await resumed.compact()
+  assert.equal(compacted.checkpointNumber, 1)
+  assert.equal((await store.loadSession(first.id))?.contextCheckpoint?.payload.messages.at(-1)?.role, 'user')
+})
+
+test('restores Tool Search discovery from full history after checkpoint replacement', async () => {
+  const store = new MemorySessionStore()
+  const deferred: Tool = {
+    effect: 'observe',
+    description: {
+      name: 'mcp__calendar__list_events',
+      description: 'List calendar events.',
+      parameters: { type: 'object' },
+    },
+    async execute() {
+      return 'events after checkpoint'
+    },
+  }
+  let firstInvocation = 0
+  const first = await AgentSession.create({
+    model: {
+      async generate(input) {
+        firstInvocation += 1
+        if (firstInvocation === 1) {
+          return {
+            kind: 'tool-calls',
+            calls: [{ id: 'find-calendar', name: 'ToolSearch', arguments: { query: 'calendar' } }],
+          }
+        }
+        if (firstInvocation === 2) {
+          return {
+            kind: 'final',
+            content: `calendar ready ${'x'.repeat(2_000)}`,
+            metadata: { usage: { inputTokens: 800, outputTokens: 500, totalTokens: 1_300 } },
+          }
+        }
+        assert.deepEqual(input.tools, [])
+        return { kind: 'final', content: '已发现日历工具。' }
+      },
+    },
+    tools: [],
+    searchableTools: [deferred],
+    store,
+  })
+  await first.send('Find a calendar tool.')
+  await first.compact()
+
+  let resumedInvocation = 0
+  const resumed = await AgentSession.resume(first.id, {
+    model: {
+      async generate(input) {
+        resumedInvocation += 1
+        assert.equal(input.messages.some(message =>
+          message.role === 'assistant'
+          && 'toolCalls' in message
+          && message.toolCalls.some(call => call.name === 'ToolSearch')
+        ), false)
+        return resumedInvocation === 1
+          ? {
+              kind: 'tool-calls',
+              calls: [{
+                id: 'list-calendar',
+                name: 'ExecuteTool',
+                arguments: { tool_name: deferred.description.name, params: {} },
+              }],
+            }
+          : { kind: 'final', content: 'still available after checkpoint' }
+      },
+    },
+    tools: [],
+    searchableTools: [deferred],
+    store,
+  })
+
+  assert.equal(await resumed.send('Use the calendar tool.'), 'still available after checkpoint')
+})
+
+test('fails automatic compaction before calling the model when no safe cursor exists', async () => {
+  let modelCalls = 0
+  const session = await AgentSession.create({
+    model: {
+      async generate() {
+        modelCalls += 1
+        return { kind: 'final', content: 'should not run' }
+      },
+    },
+    tools: [],
+    store: new MemorySessionStore(),
+    contextLimits: { autoCompactTokenLimit: 1 },
+  })
+
+  await assert.rejects(session.send('too large for an empty history'), /completed Step/)
+  assert.equal(modelCalls, 0)
+})
+
+test('reports nothing to compact when manual compaction has no completed Step', async () => {
+  const session = await AgentSession.create({
+    model: { async generate() { return { kind: 'final', content: 'unused' } } },
+    tools: [],
+    store: new MemorySessionStore(),
+  })
+
+  await assert.rejects(session.compact(), /no completed Step to compact/)
+})
+
 test('replays durable history when a restored Responses continuation is unavailable', async () => {
   const store = new MemorySessionStore()
   const project = {

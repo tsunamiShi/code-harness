@@ -83,6 +83,13 @@ function rootHelp() {
     '  --full-access      Allow filesystem access outside Project roots and enable Bash.',
     '  --mcp-config <path>  Connect MCP servers from the selected configuration.',
     '',
+    'Interactive commands:',
+    '  /resume            Select another Session from the current Project.',
+    '  /retry             Continue the current failed or interrupted Turn.',
+    '  /compact           Create a Context Checkpoint from completed work.',
+    '  /help              Show interactive commands.',
+    '  /exit              Exit the CLI.',
+    '',
     'Run `ai-agent help <command>` for details, for example `ai-agent help project create`.',
   ].join('\n')
 }
@@ -101,6 +108,13 @@ function chatHelp() {
     '  --session <id>       Resume an existing Session.',
     '  --full-access        Allow access outside Project roots and enable Bash.',
     '  --mcp-config <path>  Connect MCP servers from this configuration.',
+    '',
+    'Interactive commands:',
+    '  /resume              Select another Session from the current Project.',
+    '  /retry               Continue the current failed or interrupted Turn.',
+    '  /compact             Create a Context Checkpoint from completed work.',
+    '  /help                Show interactive commands.',
+    '  /exit                Exit the CLI.',
   ].join('\n')
 }
 
