@@ -1,4 +1,5 @@
 import { stat, realpath } from 'node:fs/promises'
+import { basename } from 'node:path'
 
 export type ProjectRootRole = 'primary' | 'attached'
 export type FilesystemAccessMode = 'scoped' | 'full'
@@ -26,6 +27,7 @@ export interface ProjectStore {
     roots: readonly ProjectRoot[]
   }): Promise<AgentProject>
   loadProject(projectId: string): Promise<AgentProject | undefined>
+  loadProjectByPrimaryRoot(path: string): Promise<AgentProject | undefined>
   listProjects(): Promise<readonly AgentProject[]>
   attachRoot(projectId: string, path: string): Promise<AgentProject>
 }
@@ -59,6 +61,17 @@ export class ProjectCatalog {
     const project = await this.store.loadProject(projectId)
     if (!project) throw new Error(`Unknown project: ${projectId}`)
     return project
+  }
+
+  /** Reuses the Project for a canonical primary root, or creates it on first use. */
+  async getOrCreateForDirectory(path: string): Promise<AgentProject> {
+    const primaryPath = await resolveDirectory(path)
+    const existing = await this.store.loadProjectByPrimaryRoot(primaryPath)
+    if (existing) return existing
+    return await this.store.createProject({
+      name: basename(primaryPath) || primaryPath,
+      roots: [{ path: primaryPath, role: 'primary' }],
+    })
   }
 
   async list(): Promise<readonly AgentProject[]> {

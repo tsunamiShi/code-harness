@@ -9,6 +9,7 @@ import mysql, {
 
 import type {
   AgentSessionSnapshot,
+  AgentSessionSummary,
   AgentLoopGuardReminder,
   AgentStep,
   AgentToolExecution,
@@ -135,6 +136,43 @@ export class MysqlAgentStore implements SessionStore, ProjectStore {
     }
   }
 
+  /** Lists the most recently active Sessions attached to one Project. */
+  async listSessionsForProject(projectId: string): Promise<readonly AgentSessionSummary[]> {
+    const [rows] = await this.pool.execute<SessionSummaryRow[]>(
+      `SELECT s.id, s.updated_at, COUNT(t.id) AS turn_count,
+              (
+                SELECT LEFT(latest.prompt, 120)
+                FROM agent_turns AS latest
+                WHERE latest.session_id = s.id
+                ORDER BY latest.turn_number DESC
+                LIMIT 1
+              ) AS last_prompt,
+              (
+                SELECT latest.status
+                FROM agent_turns AS latest
+                WHERE latest.session_id = s.id
+                ORDER BY latest.turn_number DESC
+                LIMIT 1
+              ) AS last_turn_status
+       FROM agent_sessions AS s
+       LEFT JOIN agent_turns AS t ON t.session_id = s.id
+       WHERE s.project_id = ?
+       GROUP BY s.id, s.updated_at
+       ORDER BY s.updated_at DESC, s.id
+       LIMIT 20`,
+      [projectId],
+    )
+    return rows.map(row => ({
+      id: row.id,
+      turnCount: row.turn_count,
+      ...(row.last_prompt === null ? {} : { lastPrompt: row.last_prompt }),
+      ...(row.last_turn_status === null
+        ? {}
+        : { lastTurnStatus: readTurnStatus(row.last_turn_status) }),
+      updatedAt: row.updated_at,
+    }))
+  }
+
   async createProject(input: {
     name: string
     roots: readonly ProjectRoot[]
@@ -167,6 +205,21 @@ export class MysqlAgentStore implements SessionStore, ProjectStore {
 
   async loadProject(projectId: string): Promise<AgentProject | undefined> {
     const projects = await loadProjects(this.pool, 'WHERE p.id = ?', [projectId])
+    return projects[0]
+  }
+
+  async loadProjectByPrimaryRoot(path: string): Promise<AgentProject | undefined> {
+    const projects = await loadProjects(
+      this.pool,
+      `WHERE EXISTS (
+         SELECT 1
+         FROM agent_project_roots AS primary_root
+         WHERE primary_root.project_id = p.id
+           AND primary_root.root_role = 'primary'
+           AND primary_root.root_path = ?
+       )`,
+      [path],
+    )
     return projects[0]
   }
 
@@ -310,6 +363,14 @@ interface SessionRow extends RowDataPacket {
   id: string
   project_id: string | null
   status: string
+}
+
+interface SessionSummaryRow extends RowDataPacket {
+  id: string
+  turn_count: number
+  last_prompt: string | null
+  last_turn_status: string | null
+  updated_at: Date
 }
 
 interface TurnRow extends RowDataPacket {

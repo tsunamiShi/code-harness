@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "ai-agent": "bin/ai-agent.mjs"
+  },
   "scripts": {
     "chat": "tsx --env-file=.env src/cli/chat.ts",
     "project": "tsx --env-file=.env src/cli/project.ts",

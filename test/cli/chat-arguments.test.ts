@@ -3,6 +3,26 @@ import test from 'node:test'
 
 import { readChatTarget } from '../../src/cli/chat-arguments.ts'
 
+test('uses the current directory when no explicit target is provided', () => {
+  assert.deepEqual(readChatTarget([], '/Users/example/project'), {
+    kind: 'directory',
+    path: '/Users/example/project',
+    accessMode: 'scoped',
+  })
+})
+
+test('allows current-directory chat options without an explicit target', () => {
+  assert.deepEqual(
+    readChatTarget(['--full-access', '--mcp-config', '/tmp/project.mcp.json'], '/project'),
+    {
+      kind: 'directory',
+      path: '/project',
+      accessMode: 'full',
+      mcpConfigPath: '/tmp/project.mcp.json',
+    },
+  )
+})
+
 test('accepts the pnpm argument separator passed through to the chat script', () => {
   assert.deepEqual(readChatTarget(['--', '--project', 'project-1']), {
     kind: 'project',

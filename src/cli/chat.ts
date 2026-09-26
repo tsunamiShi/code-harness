@@ -16,6 +16,11 @@ import { createMarkdownRenderer } from './markdown.ts'
 import { createTraceModeShortcut } from './trace-mode-shortcut.ts'
 import { createTurnElapsedDisplay } from './turn-elapsed.ts'
 import {
+  completeSlashCommand,
+  selectProjectSession,
+  slashCommandHelp,
+} from './slash-commands.ts'
+import {
   agentMcpConfigPathFromEnvironment,
   agentMaxTokensFromEnvironment,
   agentLoopGuardModelFromEnvironment,
@@ -35,7 +40,9 @@ try {
   const target = readChatTarget(process.argv.slice(2))
   const project = target.kind === 'project'
     ? await catalog.get(target.id)
-    : await projectForSession(target.id)
+    : target.kind === 'session'
+      ? await projectForSession(target.id)
+      : await catalog.getOrCreateForDirectory(target.path)
   codeTools = createCodeTools(project, target.accessMode)
   const mcpConfigPath = agentMcpConfigPathFromEnvironment(target.mcpConfigPath)
   if (mcpConfigPath !== undefined) {
@@ -90,10 +97,14 @@ try {
     ...(maxTokens === undefined ? {} : { maxTokens }),
     onEvent: (event: AgentEvent) => elapsedDisplay.handle(event, () => trace.handle(event)),
   }
-  const session = target.kind === 'session'
+  let session = target.kind === 'session'
     ? await AgentSession.resume(target.id, sessionOptions)
     : await AgentSession.create(sessionOptions)
-  const terminal = createInterface({ input: stdin, output: stdout })
+  const terminal = createInterface({
+    input: stdin,
+    output: stdout,
+    completer: completeSlashCommand,
+  })
   let waitingForPrompt = false
   const traceShortcut = createTraceModeShortcut({
     enabled: stdin.isTTY === true,
@@ -120,16 +131,9 @@ try {
     `Loop Guard: exact repeats ${loopGuardThresholds.join('/')} via ${loopGuardModelName} · no progress ${noProgressThresholds.join('/')} steps`,
   )
   console.log(`Session: ${session.id}`)
-  console.log('Enter /exit to quit or /retry to continue a failed Turn. Resume later with: pnpm chat -- --session <session-id>')
+  console.log('Type / then Tab for commands. Resume later with: ai-agent --session <session-id>')
 
-  if (session.hasRecoverableTurn()) {
-    console.log('Recovering the unfinished Turn from its persisted Steps...')
-    try {
-      await session.continueTurn()
-    } catch (error: unknown) {
-      console.error(`Agent recovery error: ${error instanceof Error ? error.message : String(error)}`)
-    }
-  }
+  await recoverSession(session)
 
   try {
     while (true) {
@@ -137,12 +141,34 @@ try {
       const prompt = (await terminal.question('\nYou> ')).trim()
       waitingForPrompt = false
       if (prompt === '/exit') break
+      if (prompt === '/' || prompt === '/help') {
+        console.log(slashCommandHelp())
+        continue
+      }
+      if (prompt === '/resume') {
+        const sessionId = await selectProjectSession({
+          sessions: await store.listSessionsForProject(project.id),
+          currentSessionId: session.id,
+          ask: async question => await terminal.question(question),
+          write: text => console.log(text),
+        })
+        if (sessionId === undefined) continue
+        session = await AgentSession.resume(sessionId, sessionOptions)
+        console.log(`Session: ${session.id}`)
+        await recoverSession(session)
+        continue
+      }
       if (prompt === '/retry') {
         try {
           await session.continueTurn()
         } catch (error: unknown) {
           console.error(`Agent recovery error: ${error instanceof Error ? error.message : String(error)}`)
         }
+        continue
+      }
+      if (prompt.startsWith('/')) {
+        console.error(`Unknown slash command: ${prompt}`)
+        console.log(slashCommandHelp())
         continue
       }
       if (!prompt) continue
@@ -177,4 +203,14 @@ async function projectForSession(sessionId: string) {
     throw new Error(`Session ${sessionId} is not attached to a project`)
   }
   return await catalog.get(snapshot.projectId)
+}
+
+async function recoverSession(session: AgentSession): Promise<void> {
+  if (!session.hasRecoverableTurn()) return
+  console.log('Recovering the unfinished Turn from its persisted Steps...')
+  try {
+    await session.continueTurn()
+  } catch (error: unknown) {
+    console.error(`Agent recovery error: ${error instanceof Error ? error.message : String(error)}`)
+  }
 }

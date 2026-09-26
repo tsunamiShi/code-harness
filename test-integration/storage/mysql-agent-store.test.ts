@@ -134,6 +134,18 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
     }
     assert.equal(toolStep?.providerResponseId, 'response-1')
     assert.equal(snapshot?.turns[0]?.steps[1]?.providerResponseId, 'response-2')
+    const sessionSummaries = await store.listSessionsForProject(project.id)
+    assert.deepEqual(sessionSummaries.map(summary => ({
+      id: summary.id,
+      turnCount: summary.turnCount,
+      lastPrompt: summary.lastPrompt,
+      lastTurnStatus: summary.lastTurnStatus,
+    })), [{
+      id: sessionId,
+      turnCount: 1,
+      lastPrompt: '第一轮',
+      lastTurnStatus: 'completed',
+    }])
     const [invocationRows] = await admin.query<(RowDataPacket & {
       status: string
       provider_name: string

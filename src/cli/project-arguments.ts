@@ -28,10 +28,10 @@ export function readProjectCommand(arguments_: readonly string[]): ProjectComman
 export function projectUsage(): string {
   return [
     'Usage:',
-    '  pnpm project create --name <name> --primary <path> [--root <path> ...]',
-    '  pnpm project list',
-    '  pnpm project show <project-id>',
-    '  pnpm project attach <project-id> --path <directory>',
+    '  ai-agent project create --name <name> --primary <path> [--root <path> ...]',
+    '  ai-agent project list',
+    '  ai-agent project show <project-id>',
+    '  ai-agent project attach <project-id> --path <directory>',
   ].join('\n')
 }
 

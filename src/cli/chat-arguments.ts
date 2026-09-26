@@ -1,14 +1,27 @@
 import type { FilesystemAccessMode } from '../projects/project.ts'
 
 export type ChatTarget = {
-  kind: 'project' | 'session'
+  kind: 'project'
   id: string
+  accessMode: FilesystemAccessMode
+  mcpConfigPath?: string
+} | {
+  kind: 'session'
+  id: string
+  accessMode: FilesystemAccessMode
+  mcpConfigPath?: string
+} | {
+  kind: 'directory'
+  path: string
   accessMode: FilesystemAccessMode
   mcpConfigPath?: string
 }
 
 /** Parses direct Node arguments and pnpm arguments that retain a leading separator. */
-export function readChatTarget(arguments_: readonly string[]): ChatTarget {
+export function readChatTarget(
+  arguments_: readonly string[],
+  currentDirectory = process.cwd(),
+): ChatTarget {
   const normalized = arguments_[0] === '--' ? arguments_.slice(1) : arguments_
   let target: { kind: 'project' | 'session'; id: string } | undefined
   let accessMode: FilesystemAccessMode = 'scoped'
@@ -38,7 +51,14 @@ export function readChatTarget(arguments_: readonly string[]): ChatTarget {
     throw new Error(usage())
   }
 
-  if (target === undefined) throw new Error(usage())
+  if (target === undefined) {
+    return {
+      kind: 'directory',
+      path: currentDirectory,
+      accessMode,
+      ...(mcpConfigPath === undefined ? {} : { mcpConfigPath }),
+    }
+  }
   return {
     ...target,
     accessMode,
@@ -47,5 +67,5 @@ export function readChatTarget(arguments_: readonly string[]): ChatTarget {
 }
 
 function usage(): string {
-  return 'Usage: pnpm chat -- (--project <project-id> | --session <session-id>) [--full-access] [--mcp-config <path>]'
+  return 'Usage: ai-agent [--project <project-id> | --session <session-id>] [--full-access] [--mcp-config <path>]'
 }

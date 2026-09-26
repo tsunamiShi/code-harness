@@ -50,6 +50,14 @@ export interface AgentSessionSnapshot {
   turns: readonly AgentTurn[]
 }
 
+export interface AgentSessionSummary {
+  id: string
+  turnCount: number
+  lastPrompt?: string
+  lastTurnStatus?: TurnStatus
+  updatedAt: Date
+}
+
 export type SessionRecord =
   | { type: 'turn.started'; turnId: string; prompt: string }
   | {

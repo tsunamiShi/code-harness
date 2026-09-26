@@ -66,6 +66,23 @@ test('attaches a canonical directory to an existing project', async t => {
   ])
 })
 
+test('creates a directory Project once and reuses it by canonical primary root', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'ai-agent-project-'))
+  t.after(async () => await rm(directory, { recursive: true, force: true }))
+  const primary = join(directory, 'memory')
+  await mkdir(primary)
+  const store = new RecordingProjectStore()
+  const catalog = new ProjectCatalog(store)
+
+  const created = await catalog.getOrCreateForDirectory(primary)
+  const reused = await catalog.getOrCreateForDirectory(primary)
+
+  assert.equal(created.name, 'memory')
+  assert.equal(reused.id, created.id)
+  assert.equal(store.createCount, 1)
+  assert.deepEqual(created.roots, [{ path: await realpath(primary), role: 'primary' }])
+})
+
 test('full-access instructions allow arbitrary absolute paths without changing the Project', () => {
   const project: AgentProject = {
     id: 'project-1',
@@ -123,17 +140,25 @@ test('scoped instructions omit unavailable Bash guidance', () => {
 
 class RecordingProjectStore implements ProjectStore {
   private project: AgentProject | undefined
+  createCount = 0
 
   async createProject(input: {
     name: string
     roots: readonly ProjectRoot[]
   }): Promise<AgentProject> {
+    this.createCount += 1
     this.project = { id: 'project-1', name: input.name, roots: structuredClone(input.roots) }
     return this.project
   }
 
   async loadProject(projectId: string): Promise<AgentProject | undefined> {
     return this.project?.id === projectId ? this.project : undefined
+  }
+
+  async loadProjectByPrimaryRoot(path: string): Promise<AgentProject | undefined> {
+    return this.project?.roots.some(root => root.role === 'primary' && root.path === path)
+      ? this.project
+      : undefined
   }
 
   async listProjects(): Promise<readonly AgentProject[]> {
