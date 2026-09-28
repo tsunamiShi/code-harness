@@ -40,7 +40,11 @@ _Avoid_: MCP Tool Set、Model Tool List
 
 **Tool Search**:
 模型可见的常驻 Tool，通过显式人工权重按 Tool 名称、Tool 描述、参数名称和参数描述搜索 Searchable Tools，固定返回最多五个候选及其参数 Schema。支持 `+term` 必选词和 `select:<exact_tool_name>` 精确选择；参数类型、枚举、默认值或其他 Schema 内容只随结果作为参数契约返回，不参与检索评分。
-_Avoid_: MCP Discovery、Web Search、BM25 Tool Search、Regex Tool Search
+_Avoid_: MCP Discovery、BM25 Tool Search、Regex Tool Search
+
+**WebSearch**:
+把 DashScope Responses API 的服务端 `web_search` 适配为 `observe` Tool 的 Web 搜索能力。接收一条自然语言查询，使用 `tool_choice=required` 强制检索，只把已完成 `web_search_call.action.sources` 中的来源 URL 作为结果；按需启用（`AGENT_WEB_SEARCH=true` 加 API key），超时抛错，后端错误、无检索证据和空结果作为可修正结果返回。
+_Avoid_: WebFetch、Provider Search、Search Engine Tool
 
 **Execute Tool**:
 模型可见的常驻 Tool，通过精确工具名和参数对象调用已经在更早 Step 被 Tool Search 命中的 Searchable Tool。Runtime 在调度真实适配器前按搜索结果中的 JSON Schema 校验参数；失败结果反馈给模型继续修正，不终止 Agent Loop。
@@ -149,6 +153,10 @@ _Avoid_: Event、Log
 **Model Context**:
 一次 Model Invocation 实际可见的 Project System Message、Messages 和 Tool Schemas。它可以由 Context Checkpoint 加后续持久化记录投影得到，不等同于 Session 的完整执行历史。
 _Avoid_: Execution History、Session
+
+**Context Usage**:
+Turn 到达完成或失败终态时，对下一次 Model Invocation 将继续使用的完整 Model Context 所做的 Token 估算。它复用 Context Compaction 的 estimator，并以最近 Provider Input Tokens 作为保守下限；只有显式配置 Context Window 或从内置模型规格表识别成功后，才可计算窗口占用百分比。
+_Avoid_: Exact Token Count、Turn Token Usage
 
 **Context Checkpoint**:
 Session 级不可变持久化投影点，用版本化 replacement Messages 替换截至某个已完成 Step 的模型可见前缀，同时保留底层 Turns、Steps、Tool Calls 和 Model Invocations。

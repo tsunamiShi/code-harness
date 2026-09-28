@@ -17,6 +17,7 @@ const completed: AgentEvent = {
   turnId: 'turn-1',
   steps: 1,
   durationMs: 1_500,
+  contextUsage: { estimatedTokens: 1_000 },
 }
 
 const delta: AgentEvent = {

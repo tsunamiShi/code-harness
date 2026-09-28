@@ -10,15 +10,31 @@ import {
   agentNoProgressThresholdsFromEnvironment,
   agentTraceMaxResultCharsFromEnvironment,
   agentTraceModeFromEnvironment,
+  agentWebFetchEnabledFromEnvironment,
+  agentWebSearchFromEnvironment,
 } from '../../src/cli/config.ts'
 
 test('configures automatic Context compaction with a conservative default threshold', () => {
   const previousWindow = process.env.AGENT_CONTEXT_WINDOW_TOKENS
   const previousLimit = process.env.AGENT_AUTO_COMPACT_TOKEN_LIMIT
+  const previousModel = process.env.DASHSCOPE_MODEL
   try {
     delete process.env.AGENT_CONTEXT_WINDOW_TOKENS
     delete process.env.AGENT_AUTO_COMPACT_TOKEN_LIMIT
+    process.env.DASHSCOPE_MODEL = 'unknown-model'
     assert.equal(agentContextLimitsFromEnvironment(), undefined)
+
+    process.env.DASHSCOPE_MODEL = 'glm-5.3'
+    assert.deepEqual(agentContextLimitsFromEnvironment(), {
+      contextWindowTokens: 1048576,
+      autoCompactTokenLimit: 943718,
+    })
+
+    process.env.DASHSCOPE_MODEL = 'ZHIPU/GLM-5.3'
+    assert.deepEqual(agentContextLimitsFromEnvironment(), {
+      contextWindowTokens: 1048576,
+      autoCompactTokenLimit: 943718,
+    })
 
     process.env.AGENT_CONTEXT_WINDOW_TOKENS = '100000'
     assert.deepEqual(agentContextLimitsFromEnvironment(), {
@@ -46,6 +62,8 @@ test('configures automatic Context compaction with a conservative default thresh
     else process.env.AGENT_CONTEXT_WINDOW_TOKENS = previousWindow
     if (previousLimit === undefined) delete process.env.AGENT_AUTO_COMPACT_TOKEN_LIMIT
     else process.env.AGENT_AUTO_COMPACT_TOKEN_LIMIT = previousLimit
+    if (previousModel === undefined) delete process.env.DASHSCOPE_MODEL
+    else process.env.DASHSCOPE_MODEL = previousModel
   }
 })
 
@@ -61,6 +79,76 @@ test('uses an explicit MCP config before the environment fallback', () => {
   } finally {
     if (previous === undefined) delete process.env.AGENT_MCP_CONFIG
     else process.env.AGENT_MCP_CONFIG = previous
+  }
+})
+
+test('WebFetch is enabled by default with explicit opt-out through flag or environment', () => {
+  const previous = process.env.AGENT_WEB_FETCH
+  try {
+    delete process.env.AGENT_WEB_FETCH
+    assert.equal(agentWebFetchEnabledFromEnvironment(), true)
+    assert.equal(agentWebFetchEnabledFromEnvironment(false), false)
+    assert.equal(agentWebFetchEnabledFromEnvironment(true), true)
+
+    process.env.AGENT_WEB_FETCH = 'false'
+    assert.equal(agentWebFetchEnabledFromEnvironment(), false)
+    assert.equal(agentWebFetchEnabledFromEnvironment(true), true)
+    assert.equal(agentWebFetchEnabledFromEnvironment(false), false)
+
+    process.env.AGENT_WEB_FETCH = 'true'
+    assert.equal(agentWebFetchEnabledFromEnvironment(), true)
+
+    process.env.AGENT_WEB_FETCH = 'yes'
+    assert.throws(agentWebFetchEnabledFromEnvironment, /Invalid AGENT_WEB_FETCH/)
+  } finally {
+    if (previous === undefined) delete process.env.AGENT_WEB_FETCH
+    else process.env.AGENT_WEB_FETCH = previous
+  }
+})
+
+test('WebSearch activates only when explicitly enabled with an API key', () => {
+  const previousSearch = process.env.AGENT_WEB_SEARCH
+  const previousKey = process.env.DASHSCOPE_API_KEY
+  const previousEndpoint = process.env.AGENT_WEB_SEARCH_ENDPOINT
+  const previousModel = process.env.AGENT_WEB_SEARCH_MODEL
+  try {
+    delete process.env.AGENT_WEB_SEARCH
+    process.env.DASHSCOPE_API_KEY = 'search-key'
+    // A key alone does not enable paid web searches.
+    assert.equal(agentWebSearchFromEnvironment(), undefined)
+
+    process.env.AGENT_WEB_SEARCH = 'true'
+    assert.deepEqual(agentWebSearchFromEnvironment(), { apiKey: 'search-key' })
+
+    process.env.AGENT_WEB_SEARCH = 'false'
+    assert.equal(agentWebSearchFromEnvironment(), undefined)
+    assert.equal(agentWebSearchFromEnvironment(false), undefined)
+    assert.deepEqual(agentWebSearchFromEnvironment(true), { apiKey: 'search-key' })
+
+    process.env.AGENT_WEB_SEARCH = 'true'
+    process.env.AGENT_WEB_SEARCH_ENDPOINT = 'https://custom.example/v1'
+    process.env.AGENT_WEB_SEARCH_MODEL = 'custom-model'
+    assert.deepEqual(agentWebSearchFromEnvironment(), {
+      apiKey: 'search-key',
+      endpoint: 'https://custom.example/v1',
+      model: 'custom-model',
+    })
+
+    delete process.env.DASHSCOPE_API_KEY
+    assert.throws(agentWebSearchFromEnvironment, /requires DASHSCOPE_API_KEY/)
+
+    process.env.DASHSCOPE_API_KEY = 'search-key'
+    process.env.AGENT_WEB_SEARCH = 'yes'
+    assert.throws(agentWebSearchFromEnvironment, /Invalid AGENT_WEB_SEARCH/)
+  } finally {
+    if (previousSearch === undefined) delete process.env.AGENT_WEB_SEARCH
+    else process.env.AGENT_WEB_SEARCH = previousSearch
+    if (previousKey === undefined) delete process.env.DASHSCOPE_API_KEY
+    else process.env.DASHSCOPE_API_KEY = previousKey
+    if (previousEndpoint === undefined) delete process.env.AGENT_WEB_SEARCH_ENDPOINT
+    else process.env.AGENT_WEB_SEARCH_ENDPOINT = previousEndpoint
+    if (previousModel === undefined) delete process.env.AGENT_WEB_SEARCH_MODEL
+    else process.env.AGENT_WEB_SEARCH_MODEL = previousModel
   }
 })
 

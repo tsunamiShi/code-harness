@@ -97,6 +97,7 @@ export function primaryRoot(project: AgentProject): ProjectRoot {
 export function projectInstructions(
   project: AgentProject,
   accessMode: FilesystemAccessMode = 'scoped',
+  options: { webFetch?: boolean; webSearch?: boolean } = {},
 ): string {
   const primary = primaryRoot(project)
   const roots = project.roots.map(root => `- ${root.path} (${root.role})`).join('\n')
@@ -133,6 +134,18 @@ export function projectInstructions(
     '- Use Edit or Write instead of Bash, sed, perl, or scripting languages for file changes.',
     '- Use LSP for semantic definitions and references when it is configured; do not emulate semantic queries with Bash.',
     '- If a dedicated tool returns a bounded or truncated result, narrow or paginate that tool rather than switching to Bash.',
+    ...(options.webFetch === true
+      ? [
+        '- Use WebFetch to read one exact http(s) URL that is already known from the user or a prior result; it returns page text, not search results.',
+        '- Do not guess or invent URLs; when an address is unknown, say so or ask the user instead of fetching a fabricated page.',
+      ]
+      : []),
+    ...(options.webSearch === true
+      ? [
+        '- Use WebSearch with one natural-language query to find unknown addresses or facts on the public web; it returns provider-reported source URLs and a synthesized summary, not page content.',
+        '- Read exact source URLs found by WebSearch with WebFetch before relying on the summary; cite the fetched URL.',
+      ]
+      : []),
   ]
   if (accessMode === 'full') {
     instructions.push(

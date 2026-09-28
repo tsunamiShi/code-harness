@@ -1,8 +1,9 @@
 import type { AgentEvent } from '../runtime/agent-session.ts'
+import { createColor, type TraceColor } from './colors.ts'
 import type { AgentTraceMode } from './config.ts'
 
 const DEFAULT_MAX_TOOL_RESULT_CHARS = 800
-const COLLAPSIBLE_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LSP'])
+const COLLAPSIBLE_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LSP', 'WebFetch', 'WebSearch'])
 const COMPACT_INLINE_CHARACTERS = 240
 
 export interface ConsoleTraceOptions {
@@ -41,12 +42,14 @@ export function createConsoleTrace(options: ConsoleTraceOptions): ConsoleTrace {
     const key = `${event.turnId}:${event.step}:${event.event.type}`
     if (activeStreamKey !== key) {
       finishActiveStream()
-      const label = event.event.type === 'reasoning' ? 'Provider reasoning' : 'Final content'
-      writeFragment(`│  ${label}\n│    `)
+      const reasoning = event.event.type === 'reasoning'
+      const label = reasoning ? 'Provider reasoning' : 'Final content'
+      writeFragment(`${color.dim('│')}  ${reasoning ? color.magenta(label) : color.boldCyan(label)}\n${color.dim('│')}    `)
       activeStreamKey = key
       renderedStreams.add(key)
     }
-    writeFragment(event.event.delta.replaceAll('\n', '\n│    '))
+    const delta = event.event.type === 'reasoning' ? color.magenta(event.event.delta) : event.event.delta
+    writeFragment(delta.replaceAll('\n', `\n${color.dim('│')}    `))
   }
 
   const flushCollapsedTools = (): void => {
@@ -61,7 +64,7 @@ export function createConsoleTrace(options: ConsoleTraceOptions): ConsoleTrace {
       ? ` · ${tools.map(event => compactToolTarget(event)).join(', ')}`
       : ''
     options.write(
-      `│  ${color.green('✓')} ${color.bold(`Inspected ${tools.length}`)} · ${names.join(', ')}${details} ${color.dim(`· slowest ${formatDuration(slowest)}`)}`,
+      `${color.dim('│')}  ${color.green('✓')} ${color.boldCyan(`Inspected ${tools.length}`)} ${color.dim(`· ${names.join(', ')}${details} · slowest ${formatDuration(slowest)}`)}`,
     )
   }
 
@@ -85,32 +88,32 @@ export function createConsoleTrace(options: ConsoleTraceOptions): ConsoleTrace {
     }
     switch (event.type) {
       case 'turn.started':
-        options.write(`\n${color.bold('┌─ Turn started')} ${color.dim(shortId(event.turnId))}`)
-        options.write(block('User', event.prompt, color.cyan))
+        options.write(`\n${color.boldCyan('┌─ Turn started')} ${color.dim(shortId(event.turnId))}`)
+        options.write(block('User', event.prompt, color.cyan, color))
         return
       case 'turn.resumed':
         options.write(
-          `\n${color.bold('┌─ Turn resumed')} ${color.dim(`${shortId(event.turnId)} · continuing at step ${event.step}`)}`,
+          `\n${color.boldCyan('┌─ Turn resumed')} ${color.dim(`${shortId(event.turnId)} · continuing at step ${event.step}`)}`,
         )
         return
       case 'context.compaction-started':
         options.write(
-          `│  ${color.yellow('→')} ${color.bold('Context compaction')} ${color.dim(`${event.trigger} · ${event.estimatedTokensBefore} estimated tokens`)}`,
+          `${color.dim('│')}  ${color.yellow('→')} ${color.boldCyan('Context compaction')} ${color.dim(`${event.trigger} · ${event.estimatedTokensBefore} estimated tokens`)}`,
         )
         return
       case 'context.compaction-completed':
         options.write(
-          `│  ${color.green('✓')} ${color.bold(`Context checkpoint ${event.checkpointNumber}`)} ${color.dim(`${event.estimatedTokensBefore} → ${event.estimatedTokensAfter} estimated tokens`)}`,
+          `${color.dim('│')}  ${color.green('✓')} ${color.boldGreen(`Context checkpoint ${event.checkpointNumber}`)} ${color.dim(`${event.estimatedTokensBefore} → ${event.estimatedTokensAfter} estimated tokens`)}`,
         )
         return
       case 'context.compaction-failed':
         options.write(
-          `│  ${color.red('✗')} ${color.bold('Context compaction failed')} ${color.dim(`${event.trigger} · ${event.error}`)}`,
+          `${color.dim('│')}  ${color.red('✗')} ${color.boldRed('Context compaction failed')} ${color.dim(`${event.trigger} · ${event.error}`)}`,
         )
         return
       case 'step.started':
         options.write(
-          `\n${color.bold(`├─ Step ${event.step}`)} ${color.dim(`model request · ${event.messageCount} messages · ${event.toolCount} tools`)}`,
+          `\n${color.dim('├─')} ${color.boldCyan(`Step ${event.step}`)} ${color.dim(`model request · ${event.messageCount} messages · ${event.toolCount} tools`)}`,
         )
         return
       case 'model.attempt': {
@@ -118,7 +121,7 @@ export function createConsoleTrace(options: ConsoleTraceOptions): ConsoleTrace {
         if (attempt.type === 'started') {
           attempts.set(attempt.attempt, {})
           if (mode === 'verbose') {
-            options.write(`│  ${color.yellow('→')} Provider attempt ${attempt.attempt} started`)
+            options.write(`${color.dim('│')}  ${color.yellow('→')} Provider attempt ${attempt.attempt} started`)
           }
           return
         }
@@ -128,7 +131,7 @@ export function createConsoleTrace(options: ConsoleTraceOptions): ConsoleTrace {
           attempts.set(attempt.attempt, timing)
           if (mode === 'verbose') {
             options.write(
-              `│  ${color.green('✓')} Response headers ${color.dim(`HTTP ${attempt.httpStatus} · ${formatDuration(attempt.durationMs)}`)}`,
+              `${color.dim('│')}  ${color.green('✓')} Response headers ${color.dim(`HTTP ${attempt.httpStatus} · ${formatDuration(attempt.durationMs)}`)}`,
             )
           }
           return
@@ -139,7 +142,7 @@ export function createConsoleTrace(options: ConsoleTraceOptions): ConsoleTrace {
           attempts.set(attempt.attempt, timing)
           if (mode === 'verbose') {
             options.write(
-              `│  ${color.green('✓')} First SSE event ${color.dim(`${attempt.eventType} · ${formatDuration(attempt.durationMs)}`)}`,
+              `${color.dim('│')}  ${color.green('✓')} First SSE event ${color.dim(`${attempt.eventType} · ${formatDuration(attempt.durationMs)}`)}`,
             )
           }
           return
@@ -155,14 +158,14 @@ export function createConsoleTrace(options: ConsoleTraceOptions): ConsoleTrace {
               ].filter(value => value !== undefined).join(' · ')
             : formatDuration(attempt.durationMs)
           options.write(
-            `│  ${color.green('✓')} SSE completed ${color.dim(`${attempt.eventCount} events · ${latency}`)}`,
+            `${color.dim('│')}  ${color.green('✓')} SSE completed ${color.dim(`${attempt.eventCount} events · ${latency}`)}`,
           )
           return
         }
         attempts.delete(attempt.attempt)
         const cause = attempt.causeCode ?? attempt.causeName
         options.write(
-          `│  ${color.red('✗')} Provider attempt ${attempt.attempt} failed ${color.dim(`${attempt.phase} · ${formatDuration(attempt.durationMs)}${cause ? ` · ${cause}` : ''}`)}`,
+          `${color.dim('│')}  ${color.red('✗')} ${color.boldRed(`Provider attempt ${attempt.attempt} failed`)} ${color.dim(`${attempt.phase} · ${formatDuration(attempt.durationMs)}${cause ? ` · ${cause}` : ''}`)}`,
         )
         return
       }
@@ -178,48 +181,50 @@ export function createConsoleTrace(options: ConsoleTraceOptions): ConsoleTrace {
             ? 'final answer'
             : `${event.output.calls.length} tool call${event.output.calls.length === 1 ? '' : 's'}`
           options.write(
-            `│  ${color.green('✓')} Model responded ${color.dim(`${decision} · ${formatDuration(event.durationMs)}`)}`,
+            `${color.dim('│')}  ${color.green('✓')} Model responded ${color.dim(`${decision} · ${formatDuration(event.durationMs)}`)}`,
           )
           if (event.output.kind === 'final' && !streamedOutput) {
             options.write(block(
               'Final content',
               options.renderMarkdown?.(event.output.content) ?? event.output.content,
               value => value,
+              color,
             ))
           } else if (event.output.kind === 'tool-calls' && event.output.content !== undefined && !streamedOutput) {
-            options.write(`│  ${color.green('Plan')} ${compactInline(event.output.content)}`)
+            options.write(`${color.dim('│')}  ${color.boldCyan('Plan')} ${color.italic(compactInline(event.output.content))}`)
           }
           return
         }
-        options.write(`│  ${color.green('✓')} Model responded ${color.dim(formatDuration(event.durationMs))}`)
+        options.write(`${color.dim('│')}  ${color.green('✓')} Model responded ${color.dim(formatDuration(event.durationMs))}`)
         if (event.output.reasoningContent && !streamedReasoning) {
-          options.write(block('Provider reasoning', event.output.reasoningContent, color.magenta))
+          options.write(block('Provider reasoning', event.output.reasoningContent, color.magenta, color))
         } else if (!streamedReasoning) {
-          options.write(`│  ${color.dim('Provider reasoning: not returned')}`)
+          options.write(`${color.dim('│')}  ${color.dimItalic('Provider reasoning: not returned')}`)
         }
         if (event.output.kind === 'final' && !streamedOutput) {
           options.write(block(
             'Final content',
             options.renderMarkdown?.(event.output.content) ?? event.output.content,
             value => value,
+            color,
           ))
         } else if (event.output.kind === 'tool-calls') {
           if (event.output.content !== undefined && !streamedOutput) {
-            options.write(block('Model content', event.output.content, color.green))
+            options.write(block('Model content', event.output.content, color.cyan, color))
           }
-          options.write(`│  ${color.cyan('Tool calls')} ${event.output.calls.length}`)
+          options.write(`${color.dim('│')}  ${color.boldCyan('Tool calls')} ${color.cyan(String(event.output.calls.length))}`)
         }
         return
       case 'loop-guard.reminded':
         options.write(
-          `│  ${color.yellow('!')} ${color.bold('Loop Guard reminder')} ${color.dim(`${event.summary} · after step ${event.afterStep}`)}`,
+          `${color.dim('│')}  ${color.yellow('!')} ${color.boldYellow('Loop Guard reminder')} ${color.dim(`${event.summary} · after step ${event.afterStep}`)}`,
         )
-        options.write(block('Advice', event.content, color.yellow))
+        options.write(block('Advice', event.content, color.yellow, color))
         return
       case 'tool.batch-started':
         if (mode === 'compact') return
         options.write(
-          `│  ${event.mode === 'parallel' ? color.yellow('⚡ parallel') : color.yellow('→ serial')} tool batch · ${event.count} call${event.count === 1 ? '' : 's'}`,
+          `${color.dim('│')}  ${event.mode === 'parallel' ? color.yellow('⚡ parallel') : color.yellow('→ serial')} tool batch ${color.dim(`· ${event.count} call${event.count === 1 ? '' : 's'}`)}`,
         )
         return
       case 'tool.started':
@@ -252,12 +257,14 @@ export function createConsoleTrace(options: ConsoleTraceOptions): ConsoleTrace {
       }
       case 'turn.completed':
         options.write(
-          `${color.bold('└─ Turn completed')} ${color.dim(`${event.steps} steps · ${formatDuration(event.durationMs)}`)}`,
+          `${color.boldGreen('└─ Turn completed')} ${color.dim(`${event.steps} steps · ${formatDuration(event.durationMs)}`)}`,
         )
+        options.write(renderContextUsage(event.contextUsage, color))
         return
       case 'turn.failed':
-        options.write(`${color.red('└─ Turn failed')} ${color.dim(formatDuration(event.durationMs))}`)
-        options.write(block('Error', event.error, color.red))
+        options.write(`${color.boldRed('└─ Turn failed')} ${color.dim(formatDuration(event.durationMs))}`)
+        options.write(block('Error', event.error, color.red, color))
+        options.write(renderContextUsage(event.contextUsage, color))
         return
     }
   }
@@ -280,61 +287,62 @@ type ModelDeltaEvent = Extract<AgentEvent, { type: 'model.delta' }>
 
 function renderToolStarted(
   write: (text: string) => void,
-  color: ReturnType<typeof createColor>,
+  color: TraceColor,
   event: ToolStartedEvent | ToolCompletedEvent,
 ): void {
-  write(`│  ${color.yellow('▶')} ${color.bold(event.call.name)} ${color.dim(event.call.id)}`)
-  write(block('Arguments', formatToolArguments(event.call.name, event.call.arguments), color.cyan))
+  write(`${color.dim('│')}  ${color.yellow('▶')} ${color.boldCyan(event.call.name)} ${color.dim(event.call.id)}`)
+  write(block('Arguments', formatToolArguments(event.call.name, event.call.arguments), color.cyan, color))
 }
 
 function renderToolCompleted(
   write: (text: string) => void,
-  color: ReturnType<typeof createColor>,
+  color: TraceColor,
   event: ToolCompletedEvent,
   maxToolResultChars: number,
 ): void {
   const marker = event.failed ? color.red('✗') : color.green('✓')
   write(
-    `│  ${marker} ${color.bold(event.call.name)} ${event.failed ? 'failed' : 'completed'} ${color.dim(formatDuration(event.durationMs))}`,
+    `${color.dim('│')}  ${marker} ${color.boldCyan(event.call.name)} ${event.failed ? color.red('failed') : color.green('completed')} ${color.dim(formatDuration(event.durationMs))}`,
   )
   write(
     block(
       event.failed ? 'Error' : 'Result',
       formatToolResult(event.call.name, event.content, maxToolResultChars),
       event.failed ? color.red : color.dim,
+      color,
     ),
   )
 }
 
 function renderCompactToolStarted(
   write: (text: string) => void,
-  color: ReturnType<typeof createColor>,
+  color: TraceColor,
   event: ToolStartedEvent,
 ): void {
   write(
-    `│  ${color.yellow('▶')} ${color.bold(event.call.name)} ${compactToolInvocation(event.call.name, event.call.arguments)}`,
+    `${color.dim('│')}  ${color.yellow('▶')} ${color.boldCyan(event.call.name)} ${color.dim(compactToolInvocation(event.call.name, event.call.arguments))}`,
   )
 }
 
 function renderCompactToolCompleted(
   write: (text: string) => void,
-  color: ReturnType<typeof createColor>,
+  color: TraceColor,
   event: ToolCompletedEvent,
 ): void {
   write(
-    `│  ${color.green('✓')} ${color.bold(event.call.name)} completed ${color.dim(formatDuration(event.durationMs))}`,
+    `${color.dim('│')}  ${color.green('✓')} ${color.boldCyan(event.call.name)} ${color.green('completed')} ${color.dim(formatDuration(event.durationMs))}`,
   )
 }
 
 function renderCompactToolFailure(
   write: (text: string) => void,
-  color: ReturnType<typeof createColor>,
+  color: TraceColor,
   event: ToolCompletedEvent,
 ): void {
   const target = compactToolInvocation(event.call.name, event.call.arguments)
   const reason = compactFailureReason(event.call.name, event.content)
   write(
-    `│  ${color.red('✗')} ${color.bold(event.call.name)} failed ${color.dim(`${formatDuration(event.durationMs)} · ${target}${reason ? ` · ${reason}` : ''}`)}`,
+    `${color.dim('│')}  ${color.red('✗')} ${color.boldCyan(event.call.name)} ${color.boldRed('failed')} ${color.dim(`${formatDuration(event.durationMs)} · ${target}${reason ? ` · ${reason}` : ''}`)}`,
   )
 }
 
@@ -367,6 +375,14 @@ function compactToolInvocation(name: string, arguments_: unknown): string {
   if (name === 'LSP') {
     const operation = typeof input.operation === 'string' ? input.operation : undefined
     return [operation, path].filter(value => value !== undefined).join(' · ') || '(target unavailable)'
+  }
+  if (name === 'WebFetch') {
+    const url = typeof input.url === 'string' ? compactInline(input.url) : undefined
+    return url ?? '(target unavailable)'
+  }
+  if (name === 'WebSearch') {
+    const query = typeof input.query === 'string' ? compactInline(input.query) : undefined
+    return query ?? '(query unavailable)'
   }
   const fields = formatMainFields(input, 3).replaceAll('\n', ' · ')
   return fields.length === 0 ? '(arguments unavailable)' : compactInline(fields)
@@ -413,6 +429,14 @@ function compactToolTarget(event: ToolCompletedEvent): string {
     const operation = typeof input.operation === 'string' ? input.operation : undefined
     return [operation, path].filter(value => value !== undefined).join(' · ') || event.call.id
   }
+  if (event.call.name === 'WebFetch') {
+    const url = typeof input.url === 'string' ? compactInline(input.url) : undefined
+    return url ?? event.call.id
+  }
+  if (event.call.name === 'WebSearch') {
+    const query = typeof input.query === 'string' ? compactInline(input.query) : undefined
+    return query ?? event.call.id
+  }
   return event.call.id
 }
 
@@ -426,9 +450,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function block(label: string, content: string, decorate: (value: string) => string): string {
+function block(label: string, content: string, decorate: (value: string) => string, color?: TraceColor): string {
+  const gutter = color ? color.dim('│') : '│'
   const lines = content.length === 0 ? ['(empty)'] : content.split('\n')
-  return [`│  ${decorate(label)}`, ...lines.map(line => `│    ${line}`)].join('\n')
+  return [`${gutter}  ${decorate(label)}`, ...lines.map(line => `${gutter}    ${line}`)].join('\n')
 }
 
 function formatToolArguments(name: string, value: unknown): string {
@@ -552,15 +577,40 @@ function formatDuration(durationMs: number): string {
   return `${(durationMs / 1_000).toFixed(2)}s`
 }
 
-function createColor(enabled: boolean) {
-  const wrap = (code: number) => (value: string) => enabled ? `\u001B[${code}m${value}\u001B[0m` : value
-  return {
-    bold: wrap(1),
-    dim: wrap(2),
-    red: wrap(31),
-    green: wrap(32),
-    yellow: wrap(33),
-    cyan: wrap(36),
-    magenta: wrap(35),
+function renderContextUsage(
+  usage: Extract<AgentEvent, { type: 'turn.completed' }>['contextUsage'],
+  color: TraceColor,
+): string {
+  const estimated = `~${formatInteger(usage.estimatedTokens)}`
+  if (usage.contextWindowTokens !== undefined) {
+    const ratio = usage.estimatedTokens / usage.contextWindowTokens
+    const remaining = Math.max(0, usage.contextWindowTokens - usage.estimatedTokens)
+    const threshold = usage.autoCompactTokenLimit === undefined
+      ? ''
+      : ` · auto-compact at ${formatPercentage(usage.autoCompactTokenLimit / usage.contextWindowTokens)} (${formatInteger(Math.max(0, usage.autoCompactTokenLimit - usage.estimatedTokens))} left)`
+    const decorate = ratio >= 0.9 ? color.red : ratio >= 0.7 ? color.yellow : color.green
+    const bar = contextProgressBar(ratio)
+    return `   ${color.bold('Context')} ${decorate(bar)} ${decorate(estimated)} ${color.dim(`/ ${formatInteger(usage.contextWindowTokens)} tokens (${formatPercentage(ratio)}) · ${formatInteger(remaining)} remaining${threshold}`)}`
   }
+  if (usage.autoCompactTokenLimit !== undefined) {
+    const ratio = usage.estimatedTokens / usage.autoCompactTokenLimit
+    const decorate = ratio >= 1 ? color.red : ratio >= 0.75 ? color.yellow : color.green
+    const bar = contextProgressBar(ratio)
+    return `   ${color.bold('Context')} ${decorate(bar)} ${decorate(estimated)} ${color.dim(`tokens · ${formatPercentage(ratio)} of auto-compact limit · ${formatInteger(Math.max(0, usage.autoCompactTokenLimit - usage.estimatedTokens))} remaining`)}`
+  }
+  return `   ${color.dim(`Context ${estimated} tokens · window size not configured`)}`
+}
+
+function contextProgressBar(ratio: number): string {
+  const width = 10
+  const filled = Math.min(width, Math.max(0, Math.round(ratio * width)))
+  return `[${'█'.repeat(filled)}${'░'.repeat(width - filled)}]`
+}
+
+function formatPercentage(ratio: number): string {
+  return `${(ratio * 100).toFixed(1)}%`
+}
+
+function formatInteger(value: number): string {
+  return Math.round(value).toLocaleString('en-US')
 }

@@ -43,7 +43,17 @@ test('verbose mode renders model reasoning, tool arguments, result content, and 
       failed: false,
       content: '1234567890',
     },
-    { type: 'turn.completed', turnId: '12345678-rest', steps: 1, durationMs: 1_300 },
+    {
+      type: 'turn.completed',
+      turnId: '12345678-rest',
+      steps: 1,
+      durationMs: 1_300,
+      contextUsage: {
+        estimatedTokens: 32_768,
+        contextWindowTokens: 131_072,
+        autoCompactTokenLimit: 117_964,
+      },
+    },
   ]
 
   for (const event of events) trace.handle(event)
@@ -58,6 +68,44 @@ test('verbose mode renders model reasoning, tool arguments, result content, and 
   assert.doesNotMatch(rendered, /[{}]/)
   assert.match(rendered, /12345\n│    … 2 characters omitted …\n│    890/)
   assert.match(rendered, /Turn completed 1 steps · 1\.30s/)
+  assert.match(rendered, /Context \[███░░░░░░░\] ~32,768 \/ 131,072 tokens \(25\.0%\)/)
+  assert.match(rendered, /98,304 remaining · auto-compact at 90\.0% \(85,196 left\)/)
+})
+
+test('renders Context usage without claiming a window percentage when the limit is unknown', () => {
+  const output: string[] = []
+  const trace = createConsoleTrace({ write: text => output.push(text), colors: false })
+
+  trace.handle({
+    type: 'turn.failed',
+    turnId: 'turn',
+    durationMs: 25,
+    error: 'network unavailable',
+    contextUsage: { estimatedTokens: 12_345 },
+  })
+
+  const rendered = output.join('\n')
+  assert.match(rendered, /Turn failed 25ms/)
+  assert.match(rendered, /Context ~12,345 tokens · window size not configured/)
+  assert.doesNotMatch(rendered, /%/)
+})
+
+test('renders Context progress against an explicit compaction limit without a window size', () => {
+  const output: string[] = []
+  const trace = createConsoleTrace({ write: text => output.push(text), colors: false })
+
+  trace.handle({
+    type: 'turn.completed',
+    turnId: 'turn',
+    steps: 2,
+    durationMs: 50,
+    contextUsage: { estimatedTokens: 30_000, autoCompactTokenLimit: 40_000 },
+  })
+
+  assert.match(
+    output.join('\n'),
+    /Context \[████████░░\] ~30,000 tokens · 75\.0% of auto-compact limit · 10,000 remaining/,
+  )
 })
 
 test('compact mode folds successful inspection Tools into one summary', () => {

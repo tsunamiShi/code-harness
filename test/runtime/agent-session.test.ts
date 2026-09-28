@@ -334,6 +334,47 @@ test('emits an observable execution chain with provider reasoning and tool conte
     toolResult?.type === 'tool.completed' ? toolResult.content : undefined,
     'export const app = true',
   )
+  const completed = events.find(event => event.type === 'turn.completed')
+  assert.ok(
+    completed?.type === 'turn.completed'
+    && completed.contextUsage.estimatedTokens > 0,
+  )
+})
+
+test('reports Turn-end Context usage with Provider input as a conservative floor', async () => {
+  const events: AgentEvent[] = []
+
+  await runAgent({
+    model: {
+      async generate() {
+        return {
+          kind: 'final',
+          content: 'done',
+          metadata: {
+            usage: { inputTokens: 750, outputTokens: 20, totalTokens: 770 },
+          },
+        }
+      },
+    },
+    tools: [],
+    prompt: 'measure context',
+    contextLimits: { contextWindowTokens: 1_000, autoCompactTokenLimit: 900 },
+    tokenEstimator: {
+      estimate: () => 100,
+      estimateText: () => 10,
+    },
+    onEvent: event => events.push(structuredClone(event)),
+  })
+
+  const completed = events.find(event => event.type === 'turn.completed')
+  assert.deepEqual(
+    completed?.type === 'turn.completed' ? completed.contextUsage : undefined,
+    {
+      estimatedTokens: 750,
+      contextWindowTokens: 1_000,
+      autoCompactTokenLimit: 900,
+    },
+  )
 })
 
 test('forwards model stream deltas before model completion', async () => {

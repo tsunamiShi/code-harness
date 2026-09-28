@@ -94,6 +94,32 @@ CLI 可以把 MCP Server 的工具发现并适配到同一个 Runtime Tool Regis
 
 Full Access 模式额外暴露 `Bash`。它要求一个绝对 `cwd`，返回退出码、信号、stdout、stderr、超时和截断信息；非零退出属于可供模型修正的执行结果。当前默认超时 30 秒、最大 120 秒，stdout/stderr 各最多返回 64,000 字符。
 
+## WebFetch
+
+`WebFetch` 是一个只读 HTTP(S) 抓取工具，把已知 URL 的响应体转换为可读文本后返回。它默认启用；需要关闭时显式声明：
+
+```sh
+ai-agent --no-web-fetch
+# 或在 .env 中设置 AGENT_WEB_FETCH=false
+```
+
+它接收一个不含凭据、fragment 和非默认端口的绝对 http(s) URL，可选 `timeoutMs`（默认 30 秒，上限 120 秒）。结果报告最终 URL（最多跟随 5 次重定向）、HTTP 状态、Content-Type、字节数和截断标记；`text/html` 会移除 script/style 等非正文块、解码 HTML 实体并按块级元素换行，其余文本类型原样返回，超过 64,000 字符时保留首尾。非文本内容和 404 等错误状态会以带说明的结果返回模型修正，而不是直接终止 Turn。
+
+安全模型与 `Bash` 相反：它是一个 `observe` 工具（可与其他只读工具并行），默认开启，但在网络层面主动收紧。每个请求前先解析 DNS 并校验解析结果是公网地址，随后用 pin 过的地址发起连接，避免 TOCTOU 重解析；IPv4 私网/环回/链本地段、IPv6 ULA/link-local/映射地址、`localhost` 及元数据服务主机名都会被拒绝。凭据 URL、非默认端口和超出重定向上限或形成循环的跳转直接报错。它不做搜索、不执行页面内脚本、不提交表单、也不缓存；这与 MCP 必须显式启用不同——MCP 会执行本地命令，而 WebFetch 只做对公网的只读 GET。关闭开关 `--no-web-fetch` / `AGENT_WEB_FETCH=false` 属于进程级状态，不写入数据库。
+
+## WebSearch
+
+`WebSearch` 是把 DashScope Responses API 的服务端 `web_search` 适配为 `observe` 工具的 Web 搜索能力：用一条自然语言查询返回 Provider 实际检索产生的来源 URL、检索词和基于来源生成的摘要，供模型再交给 `WebFetch` 阅读。它是显式 opt-in——仅当 `AGENT_WEB_SEARCH=true` 且存在 `DASHSCOPE_API_KEY` 时暴露（仅有 key 不会启用付费搜索）；`--no-web-search` 对单个进程关闭，命令行参数优先于环境变量：
+
+```dotenv
+AGENT_WEB_SEARCH=true
+# 可选覆盖
+AGENT_WEB_SEARCH_MODEL=qwen3.7-flash
+AGENT_WEB_SEARCH_ENDPOINT=https://dashscope.aliyuncs.com/compatible-mode/v1/responses
+```
+
+它接收 `query`（最多 400 字符）、可选 `count`（默认 10，上限 20）和 `timeoutMs`（默认 60 秒，上限 120 秒）。请求只注册一个内置 `web_search` Tool，并设置 `tool_choice: required` 强制 Provider 执行搜索；工具只接受完成的 `web_search_call`，从 `action.sources` 提取、去重并限制 http(s) 来源 URL。模型生成的摘要仅在存在检索调用证据时返回；如果 Provider 没有执行搜索，看似合理的模型文本也会被丢弃。后端错误、无检索证据和空来源以带 `message` 的可修正结果返回而非终止 Turn；超时抛错。端点必须 https（测试外）、不能内嵌凭据且拒绝环回/私网主机；摘要仍不是页面原文，引用前应先用 `WebFetch` 阅读来源 URL。进程级配置不写入 Session。真实 `qwen3.7-flash` 验证中，Provider 返回了一个 `web_search_call`、三条实际检索词和五个来源 URL，耗时约 42 秒。
+
 模型可以在同一个 Step 返回多个 Tool Calls。`Read / Glob / Grep` 声明为 parallel-safe，因此同批调用会并行执行并按模型给出的顺序写回结果。Agent Loop 不限制 Step 数量；`AGENT_MAX_TOKENS` 是可选的单次 Model Invocation 输出上限，未配置时不发送 `max_output_tokens`，由 Provider 和 Model 决定默认值。显式配置的上限不累计整个 Turn 的消耗。供应商以 `status=incomplete` 和 `reason=max_output_tokens` 截断响应时，Runtime 将本次调用视为失败，不把不完整文本误判成最终答案。
 
 Loop Guard 在每个完成的 Tool Step 后运行两个可组合 Policy。精确重复 Policy 观察工具名相同且参数规范化后完全相同的连续 Tool Calls，默认在第 3、5、8 次重复时使用独立的 `ZHIPU/GLM-5.3-Flash` 判断是否需要提醒；`AGENT_LOOP_GUARD_THRESHOLDS` 调整阈值，`DASHSCOPE_GUARD_MODEL` 覆盖模型。无进展 Policy 按 Step 统计连续没有成功 `Edit / Write` 的执行，默认在第 12、24 个 Step 直接生成固定提醒，`AGENT_NO_PROGRESS_THRESHOLDS` 调整阈值，不产生额外模型请求。Bash 属于副作用不透明的 `execute` Tool，不被当作明确文件进展。两种提醒都作为普通 User Message 加入上下文，不修改 System Prompt、不撤掉 Tools、不终止 Turn。
@@ -104,7 +130,7 @@ Turn 中每个完成的 Tool Call 都会立即持久化。模型请求或进程�
 
 Runtime 会把完整执行历史与模型可见上下文分开保存。Context Compaction 只用一个持久化 Context Checkpoint 替换截至某个已完成 Step 的模型可见前缀；原始 Turn、Step、Tool Call、Tool Result、Loop Guard Reminder、Model Invocation 和 Provider Attempt 均不会被删除。Session 恢复、Provider continuation 丢失后的重放，以及进程重启都会使用同一份 `checkpoint replacement + durable tail` 投影。
 
-自动压缩默认关闭。配置 `AGENT_CONTEXT_WINDOW_TOKENS` 后，Runtime 默认在本地估算或最近 Provider `input_tokens` 达到上下文窗口的 90% 时，于下一次普通模型调用前压缩。也可以用 `AGENT_AUTO_COMPACT_TOKEN_LIMIT` 设置更低的正整数阈值；当同时配置上下文窗口时，该值不能超过窗口的 90%。例如：
+Runtime 会优先读取 `AGENT_CONTEXT_WINDOW_TOKENS`，否则从内置模型规格表识别上下文窗口；当前 `glm-5.3` 和 `ZHIPU/GLM-5.3` 会自动使用 `1,048,576` Tokens。识别成功后，Runtime 默认在本地估算或最近 Provider `input_tokens` 达到上下文窗口的 90% 时，于下一次普通模型调用前压缩。未知模型不会猜测窗口，自动压缩默认关闭；可显式配置 `AGENT_CONTEXT_WINDOW_TOKENS`。也可以用 `AGENT_AUTO_COMPACT_TOKEN_LIMIT` 设置更低的正整数阈值；当同时存在上下文窗口时，该值不能超过窗口的 90%。例如：
 
 ```dotenv
 AGENT_CONTEXT_WINDOW_TOKENS=131072
@@ -218,7 +244,9 @@ CLI 会显示 Primary Root 和新 Session ID。正常退出后可以恢复：
 ai-agent --session <session-id>
 ```
 
-每个 Turn 会打印结构化 Execution Trace：Step 编号、模型请求中的 Message/Tool 数量、Provider Attempt 时序、Tool 执行、最终 Content 和 Turn 总耗时。交互式终端底部还会每秒刷新截至当前的 Turn 耗时；新 Trace 输出会先清除该临时行再重新显示，完成或失败后则以 Runtime 给出的总耗时为准。非交互输出不会持续刷新，避免污染重定向日志。默认 `AGENT_TRACE=compact`：响应头、首个 SSE Event、事件数和总耗时合并为一行，中间 Provider Reasoning 隐藏，成功的 `Read / Glob / Grep / LSP` 折叠为摘要，Bash 只显示 command 而不显示成功 result。交互式终端按 `Ctrl+O` 可即时切换到 `verbose`，再次按下恢复 `compact`；切换只影响后续输出，不重放已隐藏事件。`verbose` 按 Tool 语义展示 `field: value`，不直接倾倒 JSON，`AGENT_TRACE=verbose` 仍可指定启动时的初始模式。Trace Mode 只改变终端展示，不改变数据库记录或发给模型的 Tool Result。
+每个 Turn 会打印结构化 Execution Trace：Step 编号、模型请求中的 Message/Tool 数量、Provider Attempt 时序、Tool 执行、最终 Content 和 Turn 总耗时。终端输出使用共享的语义调色板（`src/cli/colors.ts`）：结构符号 `┌─ ├─ └─ │` 与元数据（id、计数、耗时、路径）一律 dim 退后；`✓` 绿、`✗` 红、`▶ → !` 黄标记进行与提醒状态；Turn/Step 标题和工具名用 bold cyan，Turn 结果用 bold green/red，用户输入与 Tool 参数为 cyan，Provider reasoning 为 magenta；Final content 保持默认前景色，作为屏幕上最亮的锚点。颜色只在交互式终端且未设置 `NO_COLOR` 时启用，非 TTY 输出字节不变。交互式终端底部还会每秒刷新截至当前的 Turn 耗时；新 Trace 输出会先清除该临时行再重新显示，完成或失败后则以 Runtime 给出的总耗时为准。非交互输出不会持续刷新，避免污染重定向日志。默认 `AGENT_TRACE=compact`：响应头、首个 SSE Event、事件数和总耗时合并为一行，中间 Provider Reasoning 隐藏，成功的 `Read / Glob / Grep / LSP` 折叠为摘要，Bash 只显示 command 而不显示成功 result。交互式终端按 `Ctrl+O` 可即时切换到 `verbose`，再次按下恢复 `compact`；切换只影响后续输出，不重放已隐藏事件。`verbose` 按 Tool 语义展示 `field: value`，不直接倾倒 JSON，`AGENT_TRACE=verbose` 仍可指定启动时的初始模式。Trace Mode 只改变终端展示，不改变数据库记录或发给模型的 Tool Result。
+
+每个 Turn 完成或失败后都会显示当前 Context 使用量。该值复用自动压缩的本地 Token estimator，并以最近一次 Provider `input_tokens` 作为保守下限，因此使用 `~` 标记为估算值。显式配置窗口或成功识别内置模型规格后，CLI 会显示进度条、已用百分比、窗口剩余 Token，以及自动压缩阈值和阈值前余量；只配置 `AGENT_AUTO_COMPACT_TOKEN_LIMIT` 时显示相对阈值的进度；无法识别窗口时只显示估算 Token，并明确提示窗口上限未知。这个状态摘要在 compact 和 verbose 两种 Trace Mode 下都会显示。
 
 Final Content 会把模型返回的 Markdown 渲染成适合当前终端宽度的标题、列表、强调、代码块、表格和链接预览；数据库仍保存原始 Markdown。展开的 Tool Result 默认最多保留开头和结尾共 800 个原始字符，中间标明省略数量；可用 `AGENT_TRACE_MAX_RESULT_CHARS` 调整。完整结果仍会写入数据库并反馈给模型。MySQL 还会持久化 Model Invocation 的输入规模、Token Usage、结束原因和错误，以及每次实际 Provider Attempt 的状态阶段、响应头耗时、首个 SSE Event 耗时、事件数、HTTP 状态、Request ID、总耗时和底层错误原因。
 
@@ -270,6 +298,11 @@ Reasoning Content 只来自供应商 Responses 输出中的 `reasoning` item（`
 - [ADR-031: Context checkpoints bound model-visible history](docs/decisions/031-context-checkpoints-bound-model-history.md)
 - [ADR-032: Global CLI defaults to the current directory](docs/decisions/032-global-cli-defaults-to-current-directory.md)
 - [ADR-033: Slash commands select Sessions within the current Project](docs/decisions/033-slash-commands-select-project-sessions.md)
+- [ADR-034: Turn completion reports Context window usage](docs/decisions/034-turn-completion-reports-context-window-usage.md)
+- [ADR-035: WebFetch is a default-on observe Tool with an explicit opt-out](docs/decisions/035-web-fetch-is-default-on-with-explicit-opt-out.md)
+- [ADR-036: Known models provide Context window defaults](docs/decisions/036-known-models-provide-context-window-defaults.md)
+- [ADR-037: WebSearch requires provider-verifiable Responses search calls](docs/decisions/037-web-search-requires-provider-verifiable-responses-calls.md)
+- [ADR-038: Console Trace uses a shared semantic color palette](docs/decisions/038-console-trace-uses-a-shared-semantic-color-palette.md)
 
 ## 当前限制
 

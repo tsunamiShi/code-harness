@@ -5,16 +5,22 @@ export type ChatTarget = {
   id: string
   accessMode: FilesystemAccessMode
   mcpConfigPath?: string
+  webFetch?: boolean
+  webSearch?: boolean
 } | {
   kind: 'session'
   id: string
   accessMode: FilesystemAccessMode
   mcpConfigPath?: string
+  webFetch?: boolean
+  webSearch?: boolean
 } | {
   kind: 'directory'
   path: string
   accessMode: FilesystemAccessMode
   mcpConfigPath?: string
+  webFetch?: boolean
+  webSearch?: boolean
 }
 
 /** Parses direct Node arguments and pnpm arguments that retain a leading separator. */
@@ -26,12 +32,29 @@ export function readChatTarget(
   let target: { kind: 'project' | 'session'; id: string } | undefined
   let accessMode: FilesystemAccessMode = 'scoped'
   let mcpConfigPath: string | undefined
+  let webFetch: boolean | undefined
+  let webSearch: boolean | undefined
 
   for (let index = 0; index < normalized.length; index += 1) {
     const argument = normalized[index]
     if (argument === '--full-access') {
       if (accessMode === 'full') throw new Error(usage())
       accessMode = 'full'
+      continue
+    }
+    if (argument === '--web-fetch') {
+      if (webFetch !== undefined) throw new Error(usage())
+      webFetch = true
+      continue
+    }
+    if (argument === '--no-web-fetch') {
+      if (webFetch !== undefined) throw new Error(usage())
+      webFetch = false
+      continue
+    }
+    if (argument === '--no-web-search') {
+      if (webSearch !== undefined) throw new Error(usage())
+      webSearch = false
       continue
     }
     if (argument === '--project' || argument === '--session') {
@@ -51,21 +74,25 @@ export function readChatTarget(
     throw new Error(usage())
   }
 
+  const suffix = {
+    accessMode,
+    ...(mcpConfigPath === undefined ? {} : { mcpConfigPath }),
+    ...(webFetch === undefined ? {} : { webFetch }),
+    ...(webSearch === undefined ? {} : { webSearch }),
+  }
   if (target === undefined) {
     return {
       kind: 'directory',
       path: currentDirectory,
-      accessMode,
-      ...(mcpConfigPath === undefined ? {} : { mcpConfigPath }),
+      ...suffix,
     }
   }
   return {
     ...target,
-    accessMode,
-    ...(mcpConfigPath === undefined ? {} : { mcpConfigPath }),
+    ...suffix,
   }
 }
 
 function usage(): string {
-  return 'Usage: ai-agent [--project <project-id> | --session <session-id>] [--full-access] [--mcp-config <path>]'
+  return 'Usage: ai-agent [--project <project-id> | --session <session-id>] [--full-access] [--mcp-config <path>] [--web-fetch | --no-web-fetch] [--no-web-search]'
 }

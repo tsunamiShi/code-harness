@@ -1,4 +1,5 @@
 import type { AgentEvent } from '../runtime/agent-session.ts'
+import { createColor } from './colors.ts'
 
 const CLEAR_LINE = '\r\u001B[2K'
 const REFRESH_INTERVAL_MS = 1_000
@@ -10,6 +11,7 @@ interface ScheduledRefresh {
 
 export interface TurnElapsedDisplayOptions {
   enabled: boolean
+  colors?: boolean | undefined
   write: (text: string) => void
   now?: () => number
   schedule?: (callback: () => void, intervalMs: number) => ScheduledRefresh
@@ -25,6 +27,7 @@ export interface TurnElapsedDisplay {
 export function createTurnElapsedDisplay(options: TurnElapsedDisplayOptions): TurnElapsedDisplay {
   const now = options.now ?? (() => performance.now())
   const schedule = options.schedule ?? scheduleRefresh
+  const color = createColor(options.colors === true)
   let startedAt: number | undefined
   let refresh: ScheduledRefresh | undefined
   let streaming = false
@@ -35,7 +38,7 @@ export function createTurnElapsedDisplay(options: TurnElapsedDisplayOptions): Tu
 
   const render = (): void => {
     if (startedAt === undefined || streaming) return
-    options.write(`${CLEAR_LINE}⏱ Elapsed ${formatElapsed(now() - startedAt)}`)
+    options.write(`${CLEAR_LINE}${color.dim(`⏱ Elapsed ${formatElapsed(now() - startedAt)}`)}`)
   }
 
   const stop = (): void => {

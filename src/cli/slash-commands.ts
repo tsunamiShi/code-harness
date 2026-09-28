@@ -1,4 +1,5 @@
 import type { AgentSessionSummary } from '../runtime/session-store.ts'
+import { createColor, type TraceColor } from './colors.ts'
 
 export const SLASH_COMMANDS = [
   { name: '/resume', description: 'Select a Session from the current Project.' },
@@ -16,12 +17,12 @@ export function completeSlashCommand(line: string): [string[], string] {
   ]
 }
 
-export function slashCommandHelp(): string {
+export function slashCommandHelp(color: TraceColor = createColor(false)): string {
   return [
-    'Slash commands:',
-    ...SLASH_COMMANDS.map(command => `  ${command.name.padEnd(8)} ${command.description}`),
+    color.bold('Slash commands:'),
+    ...SLASH_COMMANDS.map(command => `  ${color.cyan(command.name.padEnd(8))} ${color.dim(command.description)}`),
     '',
-    'Type / then press Tab to complete a command.',
+    `Type ${color.cyan('/')} then press Tab to complete a command.`,
   ].join('\n')
 }
 
@@ -30,7 +31,9 @@ export async function selectProjectSession(options: {
   currentSessionId: string
   ask: (prompt: string) => Promise<string>
   write: (text: string) => void
+  color?: TraceColor | undefined
 }): Promise<string | undefined> {
+  const color = options.color ?? createColor(false)
   const candidates = options.sessions.filter(session => session.id !== options.currentSessionId)
   if (candidates.length === 0) {
     options.write('No other Sessions exist for this Project.')
@@ -38,26 +41,27 @@ export async function selectProjectSession(options: {
   }
 
   options.write([
-    'Sessions for the current Project:',
-    ...candidates.map((session, index) => formatSessionChoice(session, index)),
+    color.bold('Sessions for the current Project:'),
+    ...candidates.map((session, index) => formatSessionChoice(session, index, color)),
   ].join('\n'))
   const answer = (await options.ask('Select a Session number, or press Enter to cancel: ')).trim()
   if (answer.length === 0) return undefined
   const selection = Number(answer)
   if (!Number.isSafeInteger(selection) || selection < 1 || selection > candidates.length) {
-    options.write(`Invalid Session selection: ${answer}`)
+    options.write(color.red(`Invalid Session selection: ${answer}`))
     return undefined
   }
   return candidates[selection - 1]?.id
 }
 
-function formatSessionChoice(session: AgentSessionSummary, index: number): string {
+function formatSessionChoice(session: AgentSessionSummary, index: number, color: TraceColor): string {
   const turnLabel = session.turnCount === 1 ? '1 Turn' : `${session.turnCount} Turns`
   const state = session.lastTurnStatus === undefined ? 'empty' : session.lastTurnStatus
   const prompt = session.lastPrompt === undefined
     ? '(no prompts yet)'
     : session.lastPrompt.replaceAll(/\s+/g, ' ').slice(0, 80)
-  return `  ${index + 1}. ${session.id} · ${formatTimestamp(session.updatedAt)} · ${turnLabel} · ${state} · ${prompt}`
+  const stateDecorate = state === 'failed' ? color.red : state === 'completed' ? color.green : color.dim
+  return `  ${color.cyan(`${index + 1}.`)} ${session.id} ${color.dim(`· ${formatTimestamp(session.updatedAt)} · ${turnLabel} ·`)} ${stateDecorate(state)} ${color.dim(`· ${prompt}`)}`
 }
 
 function formatTimestamp(value: Date): string {

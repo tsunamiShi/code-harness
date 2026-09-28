@@ -11,6 +11,7 @@ import { MysqlAgentStore } from '../storage/mysql-agent-store.ts'
 import { createCodeTools } from '../tools/code-tools.ts'
 import { connectMcpTools, type McpToolSet } from '../tools/mcp-tools.ts'
 import { readChatTarget } from './chat-arguments.ts'
+import { createColor, supportsColor } from './colors.ts'
 import { createConsoleTrace } from './console-trace.ts'
 import { createMarkdownRenderer } from './markdown.ts'
 import { createTraceModeShortcut } from './trace-mode-shortcut.ts'
@@ -29,6 +30,8 @@ import {
   agentNoProgressThresholdsFromEnvironment,
   agentTraceMaxResultCharsFromEnvironment,
   agentTraceModeFromEnvironment,
+  agentWebFetchEnabledFromEnvironment,
+  agentWebSearchFromEnvironment,
   mysqlOptionsFromEnvironment,
   requiredEnvironment,
 } from './config.ts'
@@ -44,7 +47,12 @@ try {
     : target.kind === 'session'
       ? await projectForSession(target.id)
       : await catalog.getOrCreateForDirectory(target.path)
-  codeTools = createCodeTools(project, target.accessMode)
+  const webFetch = agentWebFetchEnabledFromEnvironment(target.webFetch)
+  const webSearch = agentWebSearchFromEnvironment(target.webSearch)
+  codeTools = createCodeTools(project, target.accessMode, {
+    webFetch,
+    ...(webSearch === undefined ? {} : { webSearch }),
+  })
   const mcpConfigPath = agentMcpConfigPathFromEnvironment(target.mcpConfigPath)
   if (mcpConfigPath !== undefined) {
     mcpToolSet = await connectMcpTools({
@@ -71,18 +79,22 @@ try {
     baseURL,
     model: loopGuardModelName,
   })
+  const colors = supportsColor(stdout)
+  const color = createColor(colors)
   const trace = createConsoleTrace({
     write: text => console.log(text),
     writeFragment: text => stdout.write(text),
     mode: traceMode,
     maxToolResultChars: traceMaxResultChars,
-    colors: stdout.isTTY && process.env.NO_COLOR === undefined,
+    colors,
     renderMarkdown: createMarkdownRenderer({
       width: Math.max(40, (stdout.columns ?? 100) - 8),
+      colors,
     }),
   })
   const elapsedDisplay = createTurnElapsedDisplay({
     enabled: stdout.isTTY === true,
+    colors,
     write: text => stdout.write(text),
   })
   const sessionOptions = {
@@ -96,6 +108,8 @@ try {
     store,
     project,
     accessMode: target.accessMode,
+    webFetch,
+    ...(webSearch === undefined ? {} : { webSearch: true }),
     ...(maxTokens === undefined ? {} : { maxTokens }),
     ...(contextLimits === undefined ? {} : { contextLimits }),
     onEvent: (event: AgentEvent) => elapsedDisplay.handle(event, () => trace.handle(event)),
@@ -114,32 +128,51 @@ try {
     input: stdin,
     onToggle: () => {
       const mode = trace.toggleMode()
-      elapsedDisplay.interject(() => console.log(`Trace mode: ${mode}`))
+      elapsedDisplay.interject(() => console.log(`${color.boldCyan('Trace mode:')} ${color.dim(mode)}`))
       if (waitingForPrompt) terminal.prompt(true)
     },
   })
 
-  console.log(`Project: ${project.name}`)
-  console.log(`Working directory: ${primaryRoot(project).path}`)
-  console.log(`Filesystem access: ${target.accessMode}`)
-  console.log(
-    `MCP: ${mcpToolSet === undefined
+  const banner = (label: string, value: string): void => {
+    console.log(`${color.boldCyan(label)} ${color.dim(value)}`)
+  }
+  banner('Project:', project.name)
+  banner('Working directory:', primaryRoot(project).path)
+  banner('Filesystem access:', target.accessMode)
+  banner(
+    'MCP:',
+    mcpToolSet === undefined
       ? 'disabled'
-      : `${mcpToolSet.servers.length} server(s) · ${mcpToolSet.tools.length} searchable tool(s) · ${mcpToolSet.configPath}`}`,
+      : `${mcpToolSet.servers.length} server(s) · ${mcpToolSet.tools.length} searchable tool(s) · ${mcpToolSet.configPath}`,
   )
-  console.log(
-    `Trace: ${traceMode} · Ctrl+O toggles compact/verbose · Tool Result preview: ${traceMaxResultChars} chars`,
+  banner(
+    'WebFetch:',
+    webFetch
+      ? 'enabled (default ports, public hosts only)'
+      : 'disabled (start without --no-web-fetch to enable)',
   )
-  console.log(
-    `Loop Guard: exact repeats ${loopGuardThresholds.join('/')} via ${loopGuardModelName} · no progress ${noProgressThresholds.join('/')} steps`,
+  banner(
+    'WebSearch:',
+    webSearch === undefined
+      ? 'disabled (set AGENT_WEB_SEARCH=true to enable)'
+      : `enabled (${webSearch.model ?? 'qwen3.7-flash'} · ${webSearch.endpoint ?? 'dashscope.aliyuncs.com'})`,
   )
-  console.log(
-    `Context compaction: ${contextLimits === undefined
+  banner(
+    'Trace:',
+    `${traceMode} · Ctrl+O toggles compact/verbose · Tool Result preview: ${traceMaxResultChars} chars`,
+  )
+  banner(
+    'Loop Guard:',
+    `exact repeats ${loopGuardThresholds.join('/')} via ${loopGuardModelName} · no progress ${noProgressThresholds.join('/')} steps`,
+  )
+  banner(
+    'Context compaction:',
+    contextLimits === undefined
       ? 'manual only'
-      : `automatic at ${contextLimits.autoCompactTokenLimit} estimated tokens`}`,
+      : `automatic at ${contextLimits.autoCompactTokenLimit} estimated tokens`,
   )
-  console.log(`Session: ${session.id}`)
-  console.log('Type / then Tab for commands. Resume later with: ai-agent --session <session-id>')
+  banner('Session:', session.id)
+  console.log(`Type ${color.cyan('/')} then Tab for commands. Resume later with: ${color.cyan('ai-agent --session <session-id>')}`)
 
   await recoverSession(session)
 
@@ -150,7 +183,7 @@ try {
       waitingForPrompt = false
       if (prompt === '/exit') break
       if (prompt === '/' || prompt === '/help') {
-        console.log(slashCommandHelp())
+        console.log(slashCommandHelp(color))
         continue
       }
       if (prompt === '/resume') {
@@ -159,10 +192,11 @@ try {
           currentSessionId: session.id,
           ask: async question => await terminal.question(question),
           write: text => console.log(text),
+          color,
         })
         if (sessionId === undefined) continue
         session = await AgentSession.resume(sessionId, sessionOptions)
-        console.log(`Session: ${session.id}`)
+        console.log(`${color.boldCyan('Session:')} ${color.dim(session.id)}`)
         await recoverSession(session)
         continue
       }
@@ -170,7 +204,7 @@ try {
         try {
           await session.continueTurn()
         } catch (error: unknown) {
-          console.error(`Agent recovery error: ${error instanceof Error ? error.message : String(error)}`)
+          console.error(`${color.boldRed('Agent recovery error:')} ${error instanceof Error ? error.message : String(error)}`)
         }
         continue
       }
@@ -178,16 +212,16 @@ try {
         try {
           const result = await session.compact()
           console.log(
-            `Context checkpoint ${result.checkpointNumber} installed · estimated tokens ${result.estimatedTokensBefore} → ${result.estimatedTokensAfter}`,
+            `${color.boldGreen('Context checkpoint')} ${color.dim(`${result.checkpointNumber} installed · estimated tokens ${result.estimatedTokensBefore} → ${result.estimatedTokensAfter}`)}`,
           )
         } catch (error: unknown) {
-          console.error(`Context compaction error: ${error instanceof Error ? error.message : String(error)}`)
+          console.error(`${color.boldRed('Context compaction error:')} ${error instanceof Error ? error.message : String(error)}`)
         }
         continue
       }
       if (prompt.startsWith('/')) {
-        console.error(`Unknown slash command: ${prompt}`)
-        console.log(slashCommandHelp())
+        console.error(`${color.boldRed('Unknown slash command:')} ${color.red(prompt)}`)
+        console.log(slashCommandHelp(color))
         continue
       }
       if (!prompt) continue
@@ -195,7 +229,7 @@ try {
       try {
         await session.send(prompt)
       } catch (error: unknown) {
-        console.error(`Agent error: ${error instanceof Error ? error.message : String(error)}`)
+        console.error(`${color.boldRed('Agent error:')} ${error instanceof Error ? error.message : String(error)}`)
       }
     }
   } finally {

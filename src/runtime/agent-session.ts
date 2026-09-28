@@ -26,6 +26,7 @@ import {
   type ContextCompactionResult,
   type ContextLimits,
   type ContextManagerEvent,
+  type ContextUsage,
   type TokenEstimator,
 } from './context-manager.ts'
 import { ToolRegistry } from './tool-registry.ts'
@@ -46,6 +47,10 @@ export interface AgentSessionOptions {
   store: SessionStore
   project?: AgentProject
   accessMode?: FilesystemAccessMode
+  /** Includes WebFetch guidance in the Project System Message when the Tool is exposed. */
+  webFetch?: boolean
+  /** Includes WebSearch guidance in the Project System Message when the Tool is exposed. */
+  webSearch?: boolean
   maxTokens?: number
   contextLimits?: ContextLimits
   tokenEstimator?: TokenEstimator
@@ -113,8 +118,20 @@ export type AgentEvent =
       failed: boolean
       content: string
     }
-  | { type: 'turn.completed'; turnId: string; steps: number; durationMs: number }
-  | { type: 'turn.failed'; turnId: string; durationMs: number; error: string }
+  | {
+      type: 'turn.completed'
+      turnId: string
+      steps: number
+      durationMs: number
+      contextUsage: ContextUsage
+    }
+  | {
+      type: 'turn.failed'
+      turnId: string
+      durationMs: number
+      error: string
+      contextUsage: ContextUsage
+    }
   | ContextManagerEvent
 
 /** Owns one durable conversation and executes one turn at a time. */
@@ -266,6 +283,7 @@ export class AgentSession {
           turnId,
           steps: final.stepNumber,
           durationMs: performance.now() - turnStartedAt,
+          contextUsage: this.contextUsage(snapshot.latestInputTokens),
         })
         return final.output.content
       }
@@ -445,6 +463,7 @@ export class AgentSession {
           turnId,
           steps: step,
           durationMs: performance.now() - turnStartedAt,
+          contextUsage: this.contextUsage(output.metadata?.usage?.inputTokens),
         })
         return output.content
       }
@@ -495,6 +514,7 @@ export class AgentSession {
       turnId,
       durationMs: performance.now() - turnStartedAt,
       error: errorMessage(error),
+      contextUsage: this.contextUsage(),
     })
   }
 
@@ -619,7 +639,10 @@ export class AgentSession {
     if (!this.options.project) return undefined
     return {
       role: 'system',
-      content: projectInstructions(this.options.project, this.options.accessMode),
+      content: projectInstructions(this.options.project, this.options.accessMode, {
+        ...(this.options.webFetch === undefined ? {} : { webFetch: this.options.webFetch }),
+        ...(this.options.webSearch === undefined ? {} : { webSearch: this.options.webSearch }),
+      }),
     }
   }
 
@@ -753,6 +776,14 @@ export class AgentSession {
       content: execution.content,
     })
     return execution
+  }
+
+  private contextUsage(providerInputTokens?: number): ContextUsage {
+    return this.contextManager.estimateUsage({
+      messages: this.messages,
+      tools: this.toolRegistry.descriptions(),
+      ...(providerInputTokens === undefined ? {} : { providerInputTokens }),
+    })
   }
 
   private emit(event: AgentEvent): void {

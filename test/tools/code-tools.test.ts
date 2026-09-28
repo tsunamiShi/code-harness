@@ -19,6 +19,28 @@ test('scoped mode exposes language intelligence but withholds unsandboxed Bash',
     createCodeTools(fixture.project, 'full').map(tool => tool.description.name),
     ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'LSP', 'Bash'],
   )
+  assert.deepEqual(
+    createCodeTools(fixture.project, 'scoped', { webFetch: true }).map(tool => tool.description.name),
+    ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'LSP', 'WebFetch'],
+  )
+  assert.deepEqual(
+    createCodeTools(fixture.project, 'full', { webFetch: true }).map(tool => tool.description.name),
+    ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'LSP', 'WebFetch', 'Bash'],
+  )
+  assert.deepEqual(
+    createCodeTools(fixture.project, 'scoped', {
+      webFetch: true,
+      webSearch: { apiKey: 'search-key' },
+    }).map(tool => tool.description.name),
+    ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'LSP', 'WebFetch', 'WebSearch'],
+  )
+  assert.deepEqual(
+    createCodeTools(fixture.project, 'full', {
+      webFetch: true,
+      webSearch: { apiKey: 'search-key' },
+    }).map(tool => tool.description.name),
+    ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'LSP', 'WebFetch', 'WebSearch', 'Bash'],
+  )
 })
 
 test('code Tool schemas expose absolute paths without a root selector', async t => {

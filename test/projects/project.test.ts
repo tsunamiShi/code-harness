@@ -136,6 +136,34 @@ test('scoped instructions omit unavailable Bash guidance', () => {
 
   assert.match(instructions, /Filesystem access mode: scoped/)
   assert.doesNotMatch(instructions, /Bash: run builds/)
+  assert.doesNotMatch(instructions, /WebFetch/)
+})
+
+test('WebFetch instructions appear only when the Tool is exposed', () => {
+  const project: AgentProject = {
+    id: 'project-1',
+    name: 'project',
+    roots: [{ path: '/project/primary', role: 'primary' }],
+  }
+
+  const instructions = projectInstructions(project, 'scoped', { webFetch: true })
+
+  assert.match(instructions, /Use WebFetch to read one exact http\(s\) URL/)
+  assert.match(instructions, /Do not guess or invent URLs/)
+  assert.doesNotMatch(instructions, /WebSearch/)
+})
+
+test('WebSearch instructions appear only when the Tool is exposed', () => {
+  const project: AgentProject = {
+    id: 'project-1',
+    name: 'project',
+    roots: [{ path: '/project/primary', role: 'primary' }],
+  }
+
+  const instructions = projectInstructions(project, 'scoped', { webSearch: true })
+
+  assert.match(instructions, /Use WebSearch with one natural-language query/)
+  assert.match(instructions, /Read exact source URLs found by WebSearch with WebFetch/)
 })
 
 class RecordingProjectStore implements ProjectStore {

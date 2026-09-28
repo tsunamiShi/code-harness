@@ -82,6 +82,9 @@ function rootHelp() {
     '  --session <id>     Resume an existing Session.',
     '  --full-access      Allow filesystem access outside Project roots and enable Bash.',
     '  --mcp-config <path>  Connect MCP servers from the selected configuration.',
+    '  --web-fetch        Enable WebFetch for exact http(s) URLs (default: enabled).',
+    '  --no-web-fetch     Disable WebFetch for this process.',
+    '  --no-web-search    Disable WebSearch for this process.',
     '',
     'Interactive commands:',
     '  /resume            Select another Session from the current Project.',
@@ -97,7 +100,7 @@ function rootHelp() {
 function chatHelp() {
   return [
     'Usage:',
-    '  ai-agent [chat] [--project <project-id> | --session <session-id>] [--full-access] [--mcp-config <path>]',
+    '  ai-agent [chat] [--project <project-id> | --session <session-id>] [--full-access] [--mcp-config <path>] [--no-web-fetch] [--no-web-search]',
     '',
     'Starts an interactive conversation.',
     'Without --project or --session, the current directory becomes the Project primary root.',
@@ -108,6 +111,9 @@ function chatHelp() {
     '  --session <id>       Resume an existing Session.',
     '  --full-access        Allow access outside Project roots and enable Bash.',
     '  --mcp-config <path>  Connect MCP servers from this configuration.',
+    '  --web-fetch          Enable WebFetch for exact http(s) URLs (default: enabled).',
+    '  --no-web-fetch       Disable WebFetch for this process.',
+    '  --no-web-search      Disable WebSearch for this process.',
     '',
     'Interactive commands:',
     '  /resume              Select another Session from the current Project.',

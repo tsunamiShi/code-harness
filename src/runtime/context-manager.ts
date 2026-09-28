@@ -47,6 +47,12 @@ export interface ContextCompactionResult {
   state: ProjectedModelState
 }
 
+export interface ContextUsage {
+  estimatedTokens: number
+  contextWindowTokens?: number
+  autoCompactTokenLimit?: number
+}
+
 export type ContextManagerEvent =
   | {
       type: 'context.compaction-started'
@@ -132,6 +138,27 @@ export class ContextManager {
         snapshot.latestInputTokens ?? 0,
       ),
     })
+  }
+
+  /** Estimates the complete logical context that the next Model Invocation would continue from. */
+  estimateUsage(input: {
+    messages: readonly Message[]
+    tools: readonly ToolDescription[]
+    providerInputTokens?: number
+  }): ContextUsage {
+    const estimatedTokens = Math.max(
+      this.estimateInput(input.messages, input.tools),
+      input.providerInputTokens ?? 0,
+    )
+    return {
+      estimatedTokens,
+      ...(this.options.limits?.contextWindowTokens === undefined
+        ? {}
+        : { contextWindowTokens: this.options.limits.contextWindowTokens }),
+      ...(this.automaticLimit === undefined
+        ? {}
+        : { autoCompactTokenLimit: this.automaticLimit }),
+    }
   }
 
   private async compact(input: {

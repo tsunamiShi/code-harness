@@ -7,6 +7,10 @@ const DEFAULT_AGENT_TRACE_MAX_RESULT_CHARS = 800
 const DEFAULT_AGENT_LOOP_GUARD_THRESHOLDS = [3, 5, 8] as const
 const DEFAULT_AGENT_NO_PROGRESS_THRESHOLDS = [12, 24] as const
 const DEFAULT_AGENT_LOOP_GUARD_MODEL = 'ZHIPU/GLM-5.3-Flash'
+const KNOWN_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
+  'glm-5.3': 1_048_576,
+  'zhipu/glm-5.3': 1_048_576,
+}
 
 export function mysqlOptionsFromEnvironment(): MysqlAgentStoreOptions {
   return {
@@ -35,10 +39,12 @@ export function agentMaxTokensFromEnvironment(): number | undefined {
 }
 
 export function agentContextLimitsFromEnvironment(): ContextLimits | undefined {
-  const contextWindowTokens = readOptionalPositiveInteger(
+  const configuredContextWindowTokens = readOptionalPositiveInteger(
     process.env.AGENT_CONTEXT_WINDOW_TOKENS,
     'AGENT_CONTEXT_WINDOW_TOKENS',
   )
+  const contextWindowTokens = configuredContextWindowTokens
+    ?? contextWindowForModel(process.env.DASHSCOPE_MODEL)
   const configuredLimit = readOptionalPositiveInteger(
     process.env.AGENT_AUTO_COMPACT_TOKEN_LIMIT,
     'AGENT_AUTO_COMPACT_TOKEN_LIMIT',
@@ -64,11 +70,56 @@ export function agentContextLimitsFromEnvironment(): ContextLimits | undefined {
   }
 }
 
+function contextWindowForModel(model: string | undefined): number | undefined {
+  if (model === undefined) return undefined
+  return KNOWN_CONTEXT_WINDOWS[model.trim().toLowerCase()]
+}
+
 export function agentMcpConfigPathFromEnvironment(cliValue?: string): string | undefined {
   const value = cliValue ?? process.env.AGENT_MCP_CONFIG
   if (value === undefined) return undefined
   if (value.trim().length === 0) throw new Error('Invalid AGENT_MCP_CONFIG: path must not be empty')
   return value
+}
+
+/** WebFetch ships enabled; the CLI flag and AGENT_WEB_FETCH=false are explicit opt-outs. */
+export function agentWebFetchEnabledFromEnvironment(cliValue?: boolean): boolean {
+  if (cliValue !== undefined) return cliValue
+  const value = process.env.AGENT_WEB_FETCH
+  if (value === undefined) return true
+  if (value !== 'true' && value !== 'false') {
+    throw new Error(`Invalid AGENT_WEB_FETCH: ${value} (expected true or false)`)
+  }
+  return value === 'true'
+}
+
+export interface WebSearchConfiguration {
+  apiKey: string
+  endpoint?: string
+  model?: string
+}
+
+/**
+ * WebSearch is opt-in: AGENT_WEB_SEARCH=true activates it, and the CLI flag wins
+ * over the environment. A key alone does not enable paid web searches.
+ */
+export function agentWebSearchFromEnvironment(cliValue?: boolean): WebSearchConfiguration | undefined {
+  if (cliValue === false) return undefined
+  const value = process.env.AGENT_WEB_SEARCH
+  if (value !== undefined && value !== 'true' && value !== 'false') {
+    throw new Error(`Invalid AGENT_WEB_SEARCH: ${value} (expected true or false)`)
+  }
+  const enabled = cliValue === true || value === 'true'
+  if (!enabled) return undefined
+  const apiKey = process.env.DASHSCOPE_API_KEY
+  if (!apiKey) throw new Error('AGENT_WEB_SEARCH=true requires DASHSCOPE_API_KEY')
+  const endpoint = process.env.AGENT_WEB_SEARCH_ENDPOINT
+  const model = process.env.AGENT_WEB_SEARCH_MODEL
+  return {
+    apiKey,
+    ...(endpoint === undefined || endpoint.trim().length === 0 ? {} : { endpoint }),
+    ...(model === undefined || model.trim().length === 0 ? {} : { model }),
+  }
 }
 
 export function agentTraceModeFromEnvironment(): AgentTraceMode {
