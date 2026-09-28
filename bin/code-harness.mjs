@@ -13,7 +13,7 @@ if (helpTopic !== undefined) {
   const help = helpText(helpTopic)
   if (help === undefined) {
     console.error(`Unknown help topic: ${helpTopic.join(' ')}`)
-    console.error('Run `ai-agent help` to list available commands.')
+    console.error('Run `code-harness help` to list available commands.')
     process.exit(1)
   }
   console.log(help)
@@ -60,14 +60,14 @@ function helpText(topic) {
 
 function rootHelp() {
   return [
-    'AI Agent CLI',
+    'Code Harness CLI',
     '',
     'Usage:',
-    '  ai-agent [chat options]',
-    '  ai-agent chat [options]',
-    '  ai-agent project <command>',
-    '  ai-agent help [command]',
-    '  ai-agent --version',
+    '  code-harness [chat options]',
+    '  code-harness chat [options]',
+    '  code-harness project <command>',
+    '  code-harness help [command]',
+    '  code-harness --version',
     '',
     'Commands:',
     '  chat               Start a conversation. This is the default command.',
@@ -93,14 +93,14 @@ function rootHelp() {
     '  /help              Show interactive commands.',
     '  /exit              Exit the CLI.',
     '',
-    'Run `ai-agent help <command>` for details, for example `ai-agent help project create`.',
+    'Run `code-harness help <command>` for details, for example `code-harness help project create`.',
   ].join('\n')
 }
 
 function chatHelp() {
   return [
     'Usage:',
-    '  ai-agent [chat] [--project <project-id> | --session <session-id>] [--full-access] [--mcp-config <path>] [--no-web-fetch] [--no-web-search]',
+    '  code-harness [chat] [--project <project-id> | --session <session-id>] [--full-access] [--mcp-config <path>] [--no-web-fetch] [--no-web-search]',
     '',
     'Starts an interactive conversation.',
     'Without --project or --session, the current directory becomes the Project primary root.',
@@ -127,7 +127,7 @@ function chatHelp() {
 function projectHelp() {
   return [
     'Usage:',
-    '  ai-agent project <command>',
+    '  code-harness project <command>',
     '',
     'Commands:',
     '  create  Create a Project with one primary root and optional attached roots.',
@@ -135,14 +135,14 @@ function projectHelp() {
     '  show    Show one Project and all of its roots.',
     '  attach  Attach another directory to an existing Project.',
     '',
-    'Run `ai-agent help project <command>` for command-specific arguments.',
+    'Run `code-harness help project <command>` for command-specific arguments.',
   ].join('\n')
 }
 
 function projectCreateHelp() {
   return [
     'Usage:',
-    '  ai-agent project create --name <name> --primary <path> [--root <path> ...]',
+    '  code-harness project create --name <name> --primary <path> [--root <path> ...]',
     '',
     'Options:',
     '  --name <name>      Project display name.',
@@ -154,7 +154,7 @@ function projectCreateHelp() {
 function projectListHelp() {
   return [
     'Usage:',
-    '  ai-agent project list',
+    '  code-harness project list',
     '',
     'Lists every persistent Project as ID, name, and primary root.',
   ].join('\n')
@@ -163,7 +163,7 @@ function projectListHelp() {
 function projectShowHelp() {
   return [
     'Usage:',
-    '  ai-agent project show <project-id>',
+    '  code-harness project show <project-id>',
     '',
     'Shows the selected Project and all primary or attached roots.',
   ].join('\n')
@@ -172,7 +172,7 @@ function projectShowHelp() {
 function projectAttachHelp() {
   return [
     'Usage:',
-    '  ai-agent project attach <project-id> --path <directory>',
+    '  code-harness project attach <project-id> --path <directory>',
     '',
     'Attaches one canonical directory to an existing Project.',
   ].join('\n')
@@ -181,7 +181,7 @@ function projectAttachHelp() {
 function helpCommandHelp() {
   return [
     'Usage:',
-    '  ai-agent help [chat | project [create | list | show | attach]]',
+    '  code-harness help [chat | project [create | list | show | attach]]',
     '',
     'Shows the complete command index or detailed help for one command.',
   ].join('\n')

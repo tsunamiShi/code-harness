@@ -1,6 +1,8 @@
-# AI Agent
+# Code Harness
 
-这是一个从最小 Agent Loop 演进为可部署 Code Agent 的 TypeScript 项目。当前版本支持真实模型、内置与 MCP 工具调用、多轮对话、Multi-root Project、受 Project Root 约束的代码探索和精确文件修改，以及 MySQL 持久化、恢复和长对话上下文压缩。
+Code Harness 是一个面向自主编码 Agent 的可恢复执行框架。它把模型调用、代码工具、MCP、Project 级文件权限、持久化状态、异常恢复、上下文管理和循环防护组织在统一 Runtime 中，让 Code Agent 能够在真实代码库里持续、可审计地完成任务。
+
+当前实现提供 TypeScript CLI，支持 OpenAI-compatible Responses 模型、内置与 MCP 工具、多轮 Session、Multi-root Project、受 Project Root 约束的代码探索和精确文件修改，以及 MySQL 持久化与长对话上下文压缩。它不是单一模型封装；Harness 本身负责约束、调度并保存完整执行过程。
 
 ## 当前运行模型
 
@@ -99,7 +101,7 @@ Full Access 模式额外暴露 `Bash`。它要求一个绝对 `cwd`，返回退�
 `WebFetch` 是一个只读 HTTP(S) 抓取工具，把已知 URL 的响应体转换为可读文本后返回。它默认启用；需要关闭时显式声明：
 
 ```sh
-ai-agent --no-web-fetch
+code-harness --no-web-fetch
 # 或在 .env 中设置 AGENT_WEB_FETCH=false
 ```
 
@@ -144,10 +146,11 @@ AGENT_AUTO_COMPACT_TOKEN_LIMIT=117964
 创建本地数据库：
 
 ```sh
-mysql -uroot -e "CREATE DATABASE IF NOT EXISTS ai_agent CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"
+mysql -uroot -e "CREATE DATABASE IF NOT EXISTS code_harness CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"
 ```
 
 应用启动时会自动执行当前数据库迁移。连接配置和模型配置都从被 Git 忽略的 `.env` 读取，字段参见 `.env.example`。
+已有安装若在 `.env` 中显式配置了 `MYSQL_DATABASE=ai_agent`，可以继续沿用原数据库和其中的 Session；只有新安装默认使用 `code_harness`。
 
 ## 运行
 
@@ -162,46 +165,46 @@ pnpm test:mysql
 
 ```sh
 mkdir -p "$HOME/.local/bin"
-ln -sf "$PWD/bin/ai-agent.mjs" "$HOME/.local/bin/ai-agent"
-ai-agent --version
+ln -sf "$PWD/bin/code-harness.mjs" "$HOME/.local/bin/code-harness"
+code-harness --version
 ```
 
-在任意目录直接执行 `ai-agent`，CLI 会用当前目录作为 Primary Root。首次进入该目录时自动创建持久化 Project，之后再次从同一个真实路径启动会复用已有 Project：
+在任意目录直接执行 `code-harness`，CLI 会用当前目录作为 Primary Root。首次进入该目录时自动创建持久化 Project，之后再次从同一个真实路径启动会复用已有 Project：
 
 ```sh
 cd /absolute/path/to/project
-ai-agent
+code-harness
 ```
 
 查看完整命令索引或某个命令的详细参数：
 
 ```sh
-ai-agent help
-ai-agent help chat
-ai-agent help project
-ai-agent help project create
+code-harness help
+code-harness help chat
+code-harness help project
+code-harness help project create
 ```
 
-`ai-agent chat --help` 和 `ai-agent project create --help` 也会显示对应主题，帮助命令不会连接数据库或启动 Agent Runtime。
+`code-harness chat --help` 和 `code-harness project create --help` 也会显示对应主题，帮助命令不会连接数据库或启动 Agent Runtime。
 
-进入对话后，输入 `/` 可以查看斜杠命令，输入 `/` 后按 Tab 可以补全。`/resume` 会列出当前 Project 最近使用的 Session；从某个目录直接运行 `ai-agent` 时，这个范围就是该目录所映射的 Project。选择序号后会在当前进程中切换 Session，如果目标 Session 有未完成 Turn，则沿用原有恢复流程继续执行。`/compact` 会在安全的已完成 Step 边界手动创建 Context Checkpoint。
+进入对话后，输入 `/` 可以查看斜杠命令，输入 `/` 后按 Tab 可以补全。`/resume` 会列出当前 Project 最近使用的 Session；从某个目录直接运行 `code-harness` 时，这个范围就是该目录所映射的 Project。选择序号后会在当前进程中切换 Session，如果目标 Session 有未完成 Turn，则沿用原有恢复流程继续执行。`/compact` 会在安全的已完成 Step 边界手动创建 Context Checkpoint。
 
 也可以显式管理 Project。`--primary` 必须出现一次，`--root` 可以重复：
 
 ```sh
-ai-agent project create \
+code-harness project create \
   --name my-project \
   --primary /absolute/path/to/main-repository \
   --root /absolute/path/to/shared-package
-ai-agent project list
-ai-agent project show <project-id>
+code-harness project list
+code-harness project show <project-id>
 ```
 
 给已有 Project 增加 Attached Root：
 
 ```sh
-ai-agent project attach <project-id> --path /absolute/path/to/another-directory
-ai-agent project show <project-id>
+code-harness project attach <project-id> --path /absolute/path/to/another-directory
+code-harness project show <project-id>
 ```
 
 重复添加同一个目录不会产生重复 Root。正在运行的 CLI 使用启动时加载的 Project；添加后需要退出并用 Session ID 恢复，才能让该 Session 的 `Read / Glob / Grep` 获得新 Root。
@@ -209,13 +212,13 @@ ai-agent project show <project-id>
 从 Project 创建新 Session：
 
 ```sh
-ai-agent --project <project-id>
+code-harness --project <project-id>
 ```
 
 显式连接 MCP Server：
 
 ```sh
-ai-agent --project <project-id> --mcp-config /absolute/path/to/.mcp.json
+code-harness --project <project-id> --mcp-config /absolute/path/to/.mcp.json
 ```
 
 也可以在 `.env` 中设置 `AGENT_MCP_CONFIG`。命令行参数优先于环境变量。恢复 Session 时需要再次提供或保留该配置，因为 MCP 连接属于当前 CLI 进程，不写入 Session。
@@ -223,13 +226,13 @@ ai-agent --project <project-id> --mcp-config /absolute/path/to/.mcp.json
 需要跳过 Project Root 白名单时，可以为当前 CLI 进程显式开启完全文件系统访问：
 
 ```sh
-ai-agent --project <project-id> --full-access
+code-harness --project <project-id> --full-access
 ```
 
 恢复 Session 时同样可以选择该模式：
 
 ```sh
-ai-agent --session <session-id> --full-access
+code-harness --session <session-id> --full-access
 ```
 
 `--full-access` 允许全部 Filesystem Tools 使用任意绝对路径，包括通过 `Edit / Write` 修改或创建文件。工具仍然执行绝对路径、符号链接、文件类型、结果上限、超时和内容大小检查。该授权不写入数据库，下次启动必须重新声明；操作系统权限和 macOS 隐私控制仍可能拒绝访问。
@@ -241,7 +244,7 @@ System Prompt 会说明每个 Code Tool 的职责，要求模型复用 Tool 返�
 CLI 会显示 Primary Root 和新 Session ID。正常退出后可以恢复：
 
 ```sh
-ai-agent --session <session-id>
+code-harness --session <session-id>
 ```
 
 每个 Turn 会打印结构化 Execution Trace：Step 编号、模型请求中的 Message/Tool 数量、Provider Attempt 时序、Tool 执行、最终 Content 和 Turn 总耗时。终端输出使用共享的语义调色板（`src/cli/colors.ts`）：结构符号 `┌─ ├─ └─ │` 与元数据（id、计数、耗时、路径）一律 dim 退后；`✓` 绿、`✗` 红、`▶ → !` 黄标记进行与提醒状态；Turn/Step 标题和工具名用 bold cyan，Turn 结果用 bold green/red，用户输入与 Tool 参数为 cyan，Provider reasoning 为 magenta；Final content 保持默认前景色，作为屏幕上最亮的锚点。颜色只在交互式终端且未设置 `NO_COLOR` 时启用，非 TTY 输出字节不变。交互式终端底部还会每秒刷新截至当前的 Turn 耗时；新 Trace 输出会先清除该临时行再重新显示，完成或失败后则以 Runtime 给出的总耗时为准。非交互输出不会持续刷新，避免污染重定向日志。默认 `AGENT_TRACE=compact`：响应头、首个 SSE Event、事件数和总耗时合并为一行，中间 Provider Reasoning 隐藏，成功的 `Read / Glob / Grep / LSP` 折叠为摘要，Bash 只显示 command 而不显示成功 result。交互式终端按 `Ctrl+O` 可即时切换到 `verbose`，再次按下恢复 `compact`；切换只影响后续输出，不重放已隐藏事件。`verbose` 按 Tool 语义展示 `field: value`，不直接倾倒 JSON，`AGENT_TRACE=verbose` 仍可指定启动时的初始模式。Trace Mode 只改变终端展示，不改变数据库记录或发给模型的 Tool Result。

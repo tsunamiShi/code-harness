@@ -18,7 +18,7 @@ export function mysqlOptionsFromEnvironment(): MysqlAgentStoreOptions {
     port: readPort(process.env.MYSQL_PORT ?? '3306'),
     user: process.env.MYSQL_USER ?? 'root',
     password: process.env.MYSQL_PASSWORD ?? '',
-    database: process.env.MYSQL_DATABASE ?? 'ai_agent',
+    database: process.env.MYSQL_DATABASE ?? 'code_harness',
   }
 }
 

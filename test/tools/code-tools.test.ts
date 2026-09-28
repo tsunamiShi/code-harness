@@ -240,7 +240,7 @@ async function createFixture(t: test.TestContext): Promise<{
   project: AgentProject
   primary: string
 }> {
-  const directory = await realpath(await mkdtemp(join(tmpdir(), 'ai-agent-code-tools-')))
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'code-harness-code-tools-')))
   t.after(async () => await rm(directory, { recursive: true, force: true }))
   const primary = join(directory, 'primary')
   await mkdir(primary)

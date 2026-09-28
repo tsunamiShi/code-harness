@@ -13,7 +13,7 @@ const MAX_URL_CHARACTERS = 2_000
 const MAX_REDIRECTS = 5
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 const MAX_TEXT_CHARACTERS = 64_000
-const USER_AGENT = 'ai-agent-web-fetch/0.1'
+const USER_AGENT = 'code-harness-web-fetch/0.1'
 
 const BLOCKED_HOST_PATTERNS = [
   /^localhost$/iu,

@@ -17,7 +17,7 @@ import {
 
 import type { Tool, ToolEffect } from '../runtime/types.ts'
 
-const CLIENT_INFO = { name: 'ai-agent', version: '0.1.0' } as const
+const CLIENT_INFO = { name: 'code-harness', version: '0.1.0' } as const
 const DEFAULT_TIMEOUT_MS = 60_000
 const VERSION_PROBE_TIMEOUT_MS = 1_000
 const MAX_RUNTIME_TOOL_NAME_LENGTH = 64

@@ -385,7 +385,7 @@ class ProjectFilesystem {
     }
 
     const after = `${before.slice(0, firstMatch)}${input.newText}${before.slice(firstMatch + input.oldText.length)}`
-    const temporaryPath = `${target.actualPath}.ai-agent-${randomUUID()}.tmp`
+    const temporaryPath = `${target.actualPath}.code-harness-${randomUUID()}.tmp`
     let renamed = false
     try {
       await writeFile(temporaryPath, after, { encoding: 'utf8', mode: details.mode })
@@ -412,7 +412,7 @@ class ProjectFilesystem {
 
   async write(input: WriteInput): Promise<Record<string, unknown>> {
     const target = await this.resolveNewFile(input.path)
-    const temporaryPath = resolve(target.parentPath, `.ai-agent-write-${randomUUID()}.tmp`)
+    const temporaryPath = resolve(target.parentPath, `.code-harness-write-${randomUUID()}.tmp`)
     let targetCreated = false
 
     try {

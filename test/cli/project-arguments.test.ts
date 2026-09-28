@@ -13,6 +13,6 @@ test('parses an Attached Root command', () => {
 test('rejects incomplete Attached Root commands', () => {
   assert.throws(
     () => readProjectCommand(['attach', 'project-1']),
-    /ai-agent project attach <project-id> --path <directory>/,
+    /code-harness project attach <project-id> --path <directory>/,
   )
 })

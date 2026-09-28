@@ -1,4 +1,4 @@
-# ai-agent 接入钉钉文档 MCP：官方能力与接入边界
+# code-harness 接入钉钉文档 MCP：官方能力与接入边界
 
 > 调研日期：2026-09-25
 > 资料范围：钉钉开放平台、钉钉官方 MCP 市场接口、钉钉官方 GitHub 仓库、MCP 官方规范。未把第三方 Skill、博客或非官方 MCP Server 作为结论依据。
@@ -7,17 +7,17 @@
 
 1. **钉钉官方已经提供可由外部 MCP Client 连接的“钉钉文档 MCP Server”。** 官方市场记录为 `mcpId=9629`，标记 `official=true`、`local=false`、`onlyRunInDT=false`，服务提供方为“钉钉（中国）信息技术有限公司”。这不是只能在钉钉 AI 助理内部调用的隐藏能力。[钉钉官方市场详情 API](https://aihub.dingtalk.com/mcp/market/detail?mcpId=9629)（访问日期：2026-09-25）
 2. **官方远程 endpoint 使用 Streamable HTTP。** 钉钉公开的 OAuth 配置是 `https://mcp-gw.dingtalk.com/oauth/server/doc`，市场返回的 JSON 中明确写有 `"type":"streamable-http"`。[钉钉官方市场详情 API](https://aihub.dingtalk.com/mcp/market/detail?mcpId=9629)（访问日期：2026-09-25）
-3. **当前 ai-agent 可以直接接“市场生成的个人 StreamableHttp URL”，但不能直接完成官方 OAuth endpoint 的交互式登录。** 当前实现支持 Streamable HTTP、URL 环境变量展开和静态 Header，没有给 MCP SDK 提供 OAuth auth provider。因此现在最短路径是：用户登录钉钉官方 MCP 市场开通服务，复制个人 `StreamableHttp URL`，通过环境变量放进 `.mcp.json`，再用 `--mcp-config` 启动 ai-agent。
+3. **当前 code-harness 可以直接接“市场生成的个人 StreamableHttp URL”，但不能直接完成官方 OAuth endpoint 的交互式登录。** 当前实现支持 Streamable HTTP、URL 环境变量展开和静态 Header，没有给 MCP SDK 提供 OAuth auth provider。因此现在最短路径是：用户登录钉钉官方 MCP 市场开通服务，复制个人 `StreamableHttp URL`，通过环境变量放进 `.mcp.json`，再用 `--mcp-config` 启动 code-harness。
 4. **不需要自己再写钉钉文档 MCP Server，也不需要为这个远程市场服务申请应用 Client ID/Client Secret。** Client ID/Client Secret 是普通开放平台 OpenAPI 或旧的本地 `dingtalk-mcp` 包的接入模式，不是钉钉文档远程 MCP 的必备配置。
 5. **截至调研日期，官方市场详情返回 40 个文档 Tools。** 能力覆盖搜索、读取、创建、Markdown/Block 编辑、权限管理、上传下载、导入导出、历史版本、模板和样式；实际可操作的数据仍受当前钉钉用户和组织权限约束。[钉钉官方市场详情 API](https://aihub.dingtalk.com/mcp/market/detail?mcpId=9629)（访问日期：2026-09-25）
 
 ## 先区分三类“钉钉文档能力”
 
-| 类型 | 谁调用谁 | 协议/凭证 | 是否能直接放进 ai-agent 的 MCP 配置 |
+| 类型 | 谁调用谁 | 协议/凭证 | 是否能直接放进 code-harness 的 MCP 配置 |
 | --- | --- | --- | --- |
 | 钉钉开放平台文档/文件 OpenAPI | 自己的应用调用钉钉业务 HTTP API | REST/OpenAPI；应用 access token、用户授权和对应权限点 | 不能。需要自己编写 MCP Server，把 OpenAPI 封装成 Tools |
 | 钉钉对话或 AI 助理内使用 MCP | 钉钉自己的 AI 产品消费已部署的 MCP 能力 | 钉钉产品内部完成连接和身份传递 | 不等于外部 Client 配置方式 |
-| 官方钉钉文档 MCP Server | ai-agent 等外部 MCP Client 连接钉钉托管的远程 Server | Streamable HTTP；OAuth 或市场签发的个人 API Key URL | 可以；当前 ai-agent 应优先用个人 API Key URL |
+| 官方钉钉文档 MCP Server | code-harness 等外部 MCP Client 连接钉钉托管的远程 Server | Streamable HTTP；OAuth 或市场签发的个人 API Key URL | 可以；当前 code-harness 应优先用个人 API Key URL |
 
 钉钉开放平台官网目前把 MCP、Skill、OpenAPI 作为不同基础设施入口展示，并单列“钉钉文档 MCP”。[钉钉开放平台官网](https://open.dingtalk.com/)（访问日期：2026-09-25）
 
@@ -44,7 +44,7 @@ MCP 官方规范把 Streamable HTTP 定义为标准远程传输：Client 通过�
 
 ## 鉴权有两条路径
 
-### 路径 A：市场签发的个人 StreamableHttp URL，适合当前 ai-agent
+### 路径 A：市场签发的个人 StreamableHttp URL，适合当前 code-harness
 
 用户登录官方市场详情页并开通服务后，页面会生成可复制的 `StreamableHttp URL` 和 `JSON Config`。官方页面同时提示：
 
@@ -77,9 +77,9 @@ Authorization Server Metadata 当前位于 [钉钉 OAuth Authorization Server Me
 
 这与 MCP 官方授权流程一致：HTTP MCP Client 从 `401` 的 `WWW-Authenticate` 发现 Protected Resource Metadata，再发现 Authorization Server，并执行 OAuth 授权码流程。[MCP Authorization specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization)（访问日期：2026-09-25）
 
-当前 `src/tools/mcp-tools.ts` 创建 `StreamableHTTPClientTransport` 时只传入 URL 和可选静态 headers，没有 OAuth auth provider、回调 Server、Token 持久化或刷新逻辑。因此只把 OAuth endpoint 填进当前 ai-agent，会在连接阶段收到 401；若要走这条路径，需要另行实现 MCP OAuth Client 生命周期。
+当前 `src/tools/mcp-tools.ts` 创建 `StreamableHTTPClientTransport` 时只传入 URL 和可选静态 headers，没有 OAuth auth provider、回调 Server、Token 持久化或刷新逻辑。因此只把 OAuth endpoint 填进当前 code-harness，会在连接阶段收到 401；若要走这条路径，需要另行实现 MCP OAuth Client 生命周期。
 
-## 当前 ai-agent 的实际接入步骤
+## 当前 code-harness 的实际接入步骤
 
 ### 1. 在钉钉官方市场获取个人 URL
 
@@ -106,7 +106,7 @@ Authorization Server Metadata 当前位于 [钉钉 OAuth Authorization Server Me
 }
 ```
 
-`mcpServers`、`type: "streamable-http"`、URL 环境变量展开都已被当前 ai-agent 的 MCP 配置解析器支持。
+`mcpServers`、`type: "streamable-http"`、URL 环境变量展开都已被当前 code-harness 的 MCP 配置解析器支持。
 
 ### 3. 在当前 shell 注入个人 URL 并启动
 
@@ -122,7 +122,7 @@ pnpm chat -- \
 
 ### 4. 连接后的 Runtime Tool 名称
 
-ai-agent 会执行 `tools/list`，然后将 Tool 注册成：
+code-harness 会执行 `tools/list`，然后将 Tool 注册成：
 
 ```text
 mcp__dingtalk-docs__search_documents
@@ -195,7 +195,7 @@ Tool 列表由 Server 在连接时动态返回；不要在 Prompt 中把当前 4
 - `remove_permission`
 - `transfer_owner`
 
-完整 Tool 描述、输入 JSON Schema 和输出 JSON Schema 可从[钉钉官方市场详情 API](https://aihub.dingtalk.com/mcp/market/detail?mcpId=9629)读取。该响应把 `get_document_content` 标为敏感 Tool；但 `isSensitive=false` 或当前 ai-agent 推导出的 Tool effect 都不能代替业务权限检查或用户确认。
+完整 Tool 描述、输入 JSON Schema 和输出 JSON Schema 可从[钉钉官方市场详情 API](https://aihub.dingtalk.com/mcp/market/detail?mcpId=9629)读取。该响应把 `get_document_content` 标为敏感 Tool；但 `isSensitive=false` 或当前 code-harness 推导出的 Tool effect 都不能代替业务权限检查或用户确认。
 
 ## 能力与验证边界
 
@@ -203,18 +203,18 @@ Tool 列表由 Server 在连接时动态返回；不要在 Prompt 中把当前 4
 - 文档搜索、读取、创建、编辑和授权都使用当前钉钉用户及组织身份，并继续受钉钉原有文档、知识库和组织权限约束。
 - `get_document_content` 主要面向钉钉在线文档内容；其他文件类型是否支持内容读取或更新，应以 Tool 当次 Schema、描述和调用结果为准。
 - 写操作如覆盖内容、删除 Block、移动节点、修改权限和转交所有者，需要在 Agent 层保留明确的确认和审计策略。
-- 本次未持有用户个人 MCP URL，因而没有做真实账号的连接、`tools/list` 或文档读写验证；本文的 Server、Transport、OAuth 和 Tool 结论来自当前官方公开接口，ai-agent 兼容性结论来自当前工作区静态代码审计。
+- 本次未持有用户个人 MCP URL，因而没有做真实账号的连接、`tools/list` 或文档读写验证；本文的 Server、Transport、OAuth 和 Tool 结论来自当前官方公开接口，code-harness 兼容性结论来自当前工作区静态代码审计。
 
 ## 最终判断
 
-对当前 ai-agent，最现实的接入方案是：
+对当前 code-harness，最现实的接入方案是：
 
 ```text
-ai-agent
+code-harness
   └── Streamable HTTP
       └── 钉钉市场签发的个人 MCP URL（secret）
           └── 钉钉官方文档 MCP Server
               └── 以当前钉钉用户/组织权限操作文档
 ```
 
-因此不需要再实现一套钉钉文档 MCP Server；当前缺的是用户在官方市场完成开通并提供个人连接 URL。若希望只保存公开 OAuth endpoint、由 ai-agent 自动拉起浏览器登录和刷新 Token，则需要为 ai-agent 增加完整的 MCP OAuth Client 支持。
+因此不需要再实现一套钉钉文档 MCP Server；当前缺的是用户在官方市场完成开通并提供个人连接 URL。若希望只保存公开 OAuth endpoint、由 code-harness 自动拉起浏览器登录和刷新 Token，则需要为 code-harness 增加完整的 MCP OAuth Client 支持。

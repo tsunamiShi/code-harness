@@ -3,13 +3,13 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
-const entrypoint = fileURLToPath(new URL('../../bin/ai-agent.mjs', import.meta.url))
+const entrypoint = fileURLToPath(new URL('../../bin/code-harness.mjs', import.meta.url))
 
-test('ai-agent help lists every supported command without starting the runtime', () => {
+test('code-harness help lists every supported command without starting the runtime', () => {
   const result = run('help')
 
   assert.equal(result.status, 0)
-  assert.match(result.stdout, /AI Agent CLI/)
+  assert.match(result.stdout, /Code Harness CLI/)
   assert.match(result.stdout, /project create/)
   assert.match(result.stdout, /project list/)
   assert.match(result.stdout, /project show/)
@@ -19,7 +19,7 @@ test('ai-agent help lists every supported command without starting the runtime',
   assert.match(result.stdout, /help project create/)
 })
 
-test('ai-agent help provides detailed chat and project command topics', () => {
+test('code-harness help provides detailed chat and project command topics', () => {
   const chat = run('help', 'chat')
   const create = run('help', 'project', 'create')
   const flag = run('project', 'attach', '--help')
@@ -50,12 +50,12 @@ test('ai-agent help provides detailed chat and project command topics', () => {
   }
 })
 
-test('ai-agent help rejects an unknown topic without opening the database', () => {
+test('code-harness help rejects an unknown topic without opening the database', () => {
   const result = run('help', 'unknown')
 
   assert.equal(result.status, 1)
   assert.match(result.stderr, /Unknown help topic: unknown/)
-  assert.match(result.stderr, /ai-agent help/)
+  assert.match(result.stderr, /code-harness help/)
 })
 
 function run(...arguments_: string[]) {

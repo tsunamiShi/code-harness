@@ -10,7 +10,7 @@ import { MemorySessionStore } from '../../src/storage/memory-session-store.ts'
 import { connectMcpTools } from '../../src/tools/mcp-tools.ts'
 
 test('connects a stdio server, discovers tools, calls them, and closes idempotently', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'ai-agent-mcp-'))
+  const directory = await mkdtemp(join(tmpdir(), 'code-harness-mcp-'))
   t.after(async () => await rm(directory, { recursive: true, force: true }))
   const configPath = join(directory, '.mcp.json')
   await writeFile(configPath, JSON.stringify({
@@ -127,7 +127,7 @@ test('connects a stdio server, discovers tools, calls them, and closes idempoten
 })
 
 test('supports VS Code server maps, disabled entries, defaults, and environment fallbacks', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'ai-agent-mcp-config-'))
+  const directory = await mkdtemp(join(tmpdir(), 'code-harness-mcp-config-'))
   t.after(async () => await rm(directory, { recursive: true, force: true }))
   const configPath = join(directory, 'mcp.json')
   await writeFile(configPath, JSON.stringify({
@@ -151,7 +151,7 @@ test('supports VS Code server maps, disabled entries, defaults, and environment 
 })
 
 test('rejects ambiguous configs and missing environment variables before starting servers', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'ai-agent-mcp-invalid-'))
+  const directory = await mkdtemp(join(tmpdir(), 'code-harness-mcp-invalid-'))
   t.after(async () => await rm(directory, { recursive: true, force: true }))
   const ambiguousPath = join(directory, 'ambiguous.json')
   await writeFile(ambiguousPath, JSON.stringify({ mcpServers: {}, servers: {} }))

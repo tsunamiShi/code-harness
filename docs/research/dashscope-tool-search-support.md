@@ -105,7 +105,7 @@ Anthropic 原生 Tool Search 的协议是：
 
 这些能力说明百炼可以“调用工具”，但不说明它能“搜索 deferred 工具定义”。
 
-## 对当前 ai-agent 的建议
+## 对当前 code-harness 的建议
 
 继续采用 Provider-neutral 的客户端实现：
 

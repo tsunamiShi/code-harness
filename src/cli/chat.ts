@@ -172,7 +172,7 @@ try {
       : `automatic at ${contextLimits.autoCompactTokenLimit} estimated tokens`,
   )
   banner('Session:', session.id)
-  console.log(`Type ${color.cyan('/')} then Tab for commands. Resume later with: ${color.cyan('ai-agent --session <session-id>')}`)
+  console.log(`Type ${color.cyan('/')} then Tab for commands. Resume later with: ${color.cyan('code-harness --session <session-id>')}`)
 
   await recoverSession(session)
 

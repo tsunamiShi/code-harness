@@ -16,7 +16,7 @@ import {
 } from '../../src/storage/mysql-agent-store.ts'
 
 test('persists and restores a tool-using conversation in MySQL', async () => {
-  const database = `ai_agent_test_${randomUUID().replaceAll('-', '')}`
+  const database = `code_harness_test_${randomUUID().replaceAll('-', '')}`
   const connection = {
     host: process.env.MYSQL_HOST ?? '127.0.0.1',
     port: Number(process.env.MYSQL_PORT ?? '3306'),
@@ -30,7 +30,7 @@ test('persists and restores a tool-using conversation in MySQL', async () => {
 
   const options: MysqlAgentStoreOptions = { ...connection, database }
   let store: MysqlAgentStore | undefined
-  const attachedDirectory = await mkdtemp(join(tmpdir(), 'ai-agent-attached-'))
+  const attachedDirectory = await mkdtemp(join(tmpdir(), 'code-harness-attached-'))
   try {
     store = await MysqlAgentStore.connect(options)
     const project = await new ProjectCatalog(store).create({

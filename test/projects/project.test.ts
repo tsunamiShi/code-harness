@@ -13,7 +13,7 @@ import {
 } from '../../src/projects/project.ts'
 
 test('creates a project with one primary root and deduplicated attached roots', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'ai-agent-project-'))
+  const directory = await mkdtemp(join(tmpdir(), 'code-harness-project-'))
   t.after(async () => await rm(directory, { recursive: true, force: true }))
   const primary = join(directory, 'primary')
   const attached = join(directory, 'attached')
@@ -34,7 +34,7 @@ test('creates a project with one primary root and deduplicated attached roots', 
 })
 
 test('rejects a project root that is not a directory', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'ai-agent-project-'))
+  const directory = await mkdtemp(join(tmpdir(), 'code-harness-project-'))
   t.after(async () => await rm(directory, { recursive: true, force: true }))
   const file = join(directory, 'file.txt')
   await writeFile(file, 'not a directory')
@@ -49,7 +49,7 @@ test('rejects a project root that is not a directory', async t => {
 })
 
 test('attaches a canonical directory to an existing project', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'ai-agent-project-'))
+  const directory = await mkdtemp(join(tmpdir(), 'code-harness-project-'))
   t.after(async () => await rm(directory, { recursive: true, force: true }))
   const primary = join(directory, 'primary')
   const attached = join(directory, 'attached')
@@ -67,7 +67,7 @@ test('attaches a canonical directory to an existing project', async t => {
 })
 
 test('creates a directory Project once and reuses it by canonical primary root', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'ai-agent-project-'))
+  const directory = await mkdtemp(join(tmpdir(), 'code-harness-project-'))
   t.after(async () => await rm(directory, { recursive: true, force: true }))
   const primary = join(directory, 'memory')
   await mkdir(primary)

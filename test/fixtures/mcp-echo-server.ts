@@ -2,7 +2,7 @@ import { fromJsonSchema, McpServer } from '@modelcontextprotocol/server'
 import { serveStdio } from '@modelcontextprotocol/server/stdio'
 
 serveStdio(() => {
-  const server = new McpServer({ name: 'ai-agent-test-server', version: '1.0.0' })
+  const server = new McpServer({ name: 'code-harness-test-server', version: '1.0.0' })
 
   server.registerTool(
     'echo',

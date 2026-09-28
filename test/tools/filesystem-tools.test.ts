@@ -148,7 +148,7 @@ test('Write never overwrites an existing file or symbolic link', async t => {
   assert.equal(await readFile(existingPath, 'utf8'), 'existing')
   assert.equal(await readFile(outsidePath, 'utf8'), 'secret')
   assert.deepEqual(
-    (await readdir(fixture.primary)).filter(name => name.startsWith('.ai-agent-write-')),
+    (await readdir(fixture.primary)).filter(name => name.startsWith('.code-harness-write-')),
     [],
   )
 })
@@ -476,7 +476,7 @@ async function createFixture(t: test.TestContext): Promise<{
   attached: string
   outside: string
 }> {
-  const directory = await realpath(await mkdtemp(join(tmpdir(), 'ai-agent-project-')))
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'code-harness-project-')))
   t.after(async () => await rm(directory, { recursive: true, force: true }))
   const primary = join(directory, 'primary')
   const attached = join(directory, 'attached')

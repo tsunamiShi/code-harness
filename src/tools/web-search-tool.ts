@@ -7,7 +7,7 @@ const MAX_TIMEOUT_MS = 120_000
 const MAX_QUERY_CHARACTERS = 400
 const MAX_COUNT = 20
 const DEFAULT_COUNT = 10
-const USER_AGENT = 'ai-agent-web-search/0.1'
+const USER_AGENT = 'code-harness-web-search/0.1'
 
 /**
  * DashScope-hosted search backend. The endpoint is fixed, so the Tool exposes no

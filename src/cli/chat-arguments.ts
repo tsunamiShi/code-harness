@@ -94,5 +94,5 @@ export function readChatTarget(
 }
 
 function usage(): string {
-  return 'Usage: ai-agent [--project <project-id> | --session <session-id>] [--full-access] [--mcp-config <path>] [--web-fetch | --no-web-fetch] [--no-web-search]'
+  return 'Usage: code-harness [--project <project-id> | --session <session-id>] [--full-access] [--mcp-config <path>] [--web-fetch | --no-web-fetch] [--no-web-search]'
 }

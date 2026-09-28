@@ -28,10 +28,10 @@ export function readProjectCommand(arguments_: readonly string[]): ProjectComman
 export function projectUsage(): string {
   return [
     'Usage:',
-    '  ai-agent project create --name <name> --primary <path> [--root <path> ...]',
-    '  ai-agent project list',
-    '  ai-agent project show <project-id>',
-    '  ai-agent project attach <project-id> --path <directory>',
+    '  code-harness project create --name <name> --primary <path> [--root <path> ...]',
+    '  code-harness project list',
+    '  code-harness project show <project-id>',
+    '  code-harness project attach <project-id> --path <directory>',
   ].join('\n')
 }
 

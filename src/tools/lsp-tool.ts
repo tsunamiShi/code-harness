@@ -269,7 +269,7 @@ class LanguageServerClient implements PooledLspClient<LanguageServerQuery, Recor
     try {
       await withTimeout(connection.sendRequest('initialize', {
         processId: process.pid,
-        clientInfo: { name: 'ai-agent', version: '0.1.0' },
+        clientInfo: { name: 'code-harness', version: '0.1.0' },
         rootUri: pathToFileURL(this.root.path).href,
         workspaceFolders: [{ uri: pathToFileURL(this.root.path).href, name: 'project' }],
         capabilities: {

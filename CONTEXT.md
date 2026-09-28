@@ -1,4 +1,4 @@
-# AI Agent
+# Code Harness
 
 这个上下文描述一个 Code Agent 如何在授权目录中持续处理用户输入、调用工具并保留可恢复的执行过程。
 
